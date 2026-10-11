@@ -40,4 +40,10 @@ describe("readSpendCap", () => {
   ])("reads %j as unknown", (raw) => {
     expect(readSpendCap(raw)).toEqual({ state: "unknown" });
   });
+
+  // "No cap" needs a zero that was written as one: a positive decimal too
+  // small for a double becomes 0 on conversion.
+  it("does not read a positive decimal that underflows to zero as no cap", () => {
+    expect(readSpendCap(`0.${"0".repeat(323)}1`)).toEqual({ state: "unknown" });
+  });
 });

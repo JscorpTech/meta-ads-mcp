@@ -382,6 +382,26 @@ describe("registerBillingTools", () => {
       ]);
     });
 
+    it("ads_get_spend_limit: a cap with nothing spent leaves the whole cap and 0.0% used", async () => {
+      const lines = await read(1, { currency: "USD", spend_cap: "100000", amount_spent: "0" });
+
+      expect(lines).toContain("Remaining: USD 1,000.00");
+      expect(lines).toContain("Usage: 0.0% of spend cap used");
+    });
+
+    it("ads_get_spend_limit: a cap without an amount spent prints neither a remainder nor a usage", async () => {
+      const lines = await read(1, { currency: "USD", spend_cap: "100000" });
+
+      expect(lines).toEqual(["Account: Cuenta", "", "Spend Cap: USD 1,000.00", "Amount Spent: N/A"]);
+    });
+
+    it("ads_get_spend_limit: an overspent cap reports a usage above 100%", async () => {
+      const lines = await read(1, { currency: "USD", spend_cap: "100000", amount_spent: "125000" });
+
+      expect(lines).toContain("Remaining: USD -250.00");
+      expect(lines).toContain("Usage: 125.0% of spend cap used");
+    });
+
     it("ads_get_billing_info: an account without a cap reads 'No limit', not a cap of zero", async () => {
       const lines = await read(0, { currency: "USD", amount_spent: "35", spend_cap: "0" });
 

@@ -19,5 +19,8 @@ export const SPEND_CAP_NOT_REPORTED = "not reported by Meta";
 export function readSpendCap(raw: unknown): HeldSpendCap {
   const value = typeof raw === "string" && /^\d+(\.\d+)?$/.test(raw) ? Number(raw) : raw;
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return { state: "unknown" };
-  return value === 0 ? { state: "none" } : { state: "set", minor: value };
+  if (value > 0) return { state: "set", minor: value };
+  // A positive decimal too small for a double converts to 0: only a zero
+  // that was written as one means there is no cap.
+  return typeof raw === "string" && /[1-9]/.test(raw) ? { state: "unknown" } : { state: "none" };
 }
