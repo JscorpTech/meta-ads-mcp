@@ -158,6 +158,37 @@ describe("registerAccountTools", () => {
       const url = new URL(vi.mocked(fetch).mock.calls[0][0] as string);
       expect(url.pathname).toContain("act_123");
     });
+
+    const capLine = async (account: Record<string, unknown>) => {
+      const server = createMockMcpServer();
+      registerAccountTools(server as never);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({
+        id: "act_123", account_id: "123", name: "Cuenta", account_status: 1, currency: "USD",
+        timezone_name: "America/Bogota", amount_spent: "35", balance: "0", ...account,
+      })));
+      const result = await server._registeredTools[1].handler({ account_id: "123" }) as {
+        content: Array<{ type: string; text: string }>;
+      };
+      return result.content[0].text.split("\n").at(-1);
+    };
+
+    // Meta sends spend_cap "0" for an account without a cap.
+    it("reads an account without a cap as 'None', not as a cap of 0", async () => {
+      expect(await capLine({ spend_cap: "0" })).toBe("Spend Cap: None");
+    });
+
+    it.each([
+      ["a missing field", {}],
+      ["null", { spend_cap: null }],
+      ["an empty string", { spend_cap: "" }],
+      ["text", { spend_cap: "abc" }],
+    ])("does not call a cap Meta did not report (%s) 'None'", async (_label, cap) => {
+      expect(await capLine(cap)).toBe("Spend Cap: not reported by Meta");
+    });
+
+    it("still prints a cap that is set as the number Meta sent", async () => {
+      expect(await capLine({ spend_cap: "100000" })).toBe("Spend Cap: 100000");
+    });
   });
 
   describe("ads_get_pages_for_business handler", () => {

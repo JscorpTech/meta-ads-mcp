@@ -13,6 +13,7 @@ import type {
   Page,
   MetaApiResponse,
 } from "../meta/types/index.js";
+import { readSpendCap, SPEND_CAP_NOT_REPORTED } from "../meta/spend-cap.js";
 import { READ } from "./_register.js";
 
 export function registerAccountTools(server: McpServer): void {
@@ -101,11 +102,18 @@ export function registerAccountTools(server: McpServer): void {
         fields: fieldsParam,
       });
 
+      // A cap that is set is printed as Meta sent it, like the other amounts
+      // here; "None" is for the zero Meta sends when there is no cap.
+      const cap = readSpendCap(account.spend_cap);
+      const spendCapText = cap.state === "unknown"
+        ? SPEND_CAP_NOT_REPORTED
+        : cap.state === "none" ? "None" : account.spend_cap;
+
       return {
         content: [
           {
             type: "text",
-            text: `Account: ${account.name} (${account.account_id})\nStatus: ${account.account_status === 1 ? "ACTIVE" : "DISABLED"}\nCurrency: ${account.currency}\nTimezone: ${account.timezone_name}\nSpent: ${account.amount_spent ?? "N/A"}\nBalance: ${account.balance ?? "N/A"}\nSpend Cap: ${account.spend_cap ?? "None"}`,
+            text: `Account: ${account.name} (${account.account_id})\nStatus: ${account.account_status === 1 ? "ACTIVE" : "DISABLED"}\nCurrency: ${account.currency}\nTimezone: ${account.timezone_name}\nSpent: ${account.amount_spent ?? "N/A"}\nBalance: ${account.balance ?? "N/A"}\nSpend Cap: ${spendCapText}`,
           },
           { type: "text", text: JSON.stringify(account, null, 2) },
         ],
