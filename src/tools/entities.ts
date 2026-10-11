@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { metaApiClient } from "../meta/client.js";
+import { statedAmounts } from "../meta/account-currency.js";
+import { MINOR_UNIT_NOTE } from "../meta/currency.js";
 import { normalizeAccountId, validateMetaId } from "../utils/format.js";
 import { buildFieldsParam } from "../utils/validation.js";
 import { CAMPAIGN_DEFAULT_FIELDS } from "../meta/types/campaign.js";
@@ -113,7 +115,7 @@ export function registerEntityTools(server: McpServer): void {
         updates: z
           .record(z.string(), z.unknown())
           .describe(
-            "Fields to update (e.g. { name, status, daily_budget }). See entity-specific update tools for valid keys per type. Complex fields (targeting, creative, evaluation_spec) are JSON-encoded automatically.",
+            `Fields to update (e.g. { name, status, daily_budget }). See entity-specific update tools for valid keys per type. Complex fields (targeting, creative, evaluation_spec) are JSON-encoded automatically. daily_budget, lifetime_budget and bid_amount are ${MINOR_UNIT_NOTE}.`,
           ),
       },
       annotations: { ...UPDATE },
@@ -123,12 +125,13 @@ export function registerEntityTools(server: McpServer): void {
       const body = encodeUpdatesBody(updates);
 
       await metaApiClient.postForm<{ success: boolean }>(`/${id}`, body);
+      const amountLines = await statedAmounts(body, { entityId: id });
 
       return {
         content: [
           {
             type: "text",
-            text: `${entity_type} ${id} updated.\nChanges: ${JSON.stringify(body)}`,
+            text: `${entity_type} ${id} updated.\nChanges: ${JSON.stringify(body)}${amountLines}`,
           },
         ],
       };

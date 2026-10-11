@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { metaApiClient } from "../meta/client.js";
+import { statedAmounts } from "../meta/account-currency.js";
+import { MINOR_UNIT_NOTE } from "../meta/currency.js";
 import { normalizeAccountId, validateMetaId } from "../utils/format.js";
 import { buildFieldsParam } from "../utils/validation.js";
 import { ADSET_DEFAULT_FIELDS } from "../meta/types/adset.js";
@@ -127,8 +129,8 @@ const cloneTargetAdSetSchema = z.object({
   name: z.string().min(1).describe("Name for the cloned ad set"),
   geo_override: geoLocationSchema.describe("Geo override that REPLACES the source geo_locations (for example, { countries: ['CL'] }). Cities/regions/zips from the source are NOT inherited."),
   status: z.enum(["ACTIVE", "PAUSED"]).default("PAUSED").describe("Status for the cloned ad set and ads. Defaults to PAUSED."),
-  daily_budget: z.number().optional().describe("Optional daily budget override in cents. Takes precedence over the source budget, regardless of source budget type."),
-  lifetime_budget: z.number().optional().describe("Optional lifetime budget override in cents. Requires end_time."),
+  daily_budget: z.number().optional().describe(`Optional daily budget override ${MINOR_UNIT_NOTE}. Takes precedence over the source budget, regardless of source budget type.`),
+  lifetime_budget: z.number().optional().describe("Optional lifetime budget override, in the same unit as daily_budget. Requires end_time."),
   end_time: z.string().optional().describe("ISO 8601 end time. Required when lifetime_budget is set."),
   destination_type: destinationTypeEnum.optional().describe("Optional destination_type override"),
   promoted_object: z.record(z.string(), z.unknown()).optional().describe("Optional promoted_object override"),
@@ -797,11 +799,25 @@ export function registerAdSetTools(server: McpServer): void {
         });
       }
 
+      // Restated from the body that was sent, and only where the caller's
+      // own value is what went into it: a budget or bid copied from the source
+      // ad set is already in this account's unit, and a caller's daily budget
+      // is dropped when a lifetime budget comes with it.
+      const callerLifetime = target_ad_set.lifetime_budget !== undefined;
+      const callerDaily = !callerLifetime && target_ad_set.daily_budget !== undefined;
+      const amountLines = await statedAmounts(
+        {
+          ...(callerLifetime ? { lifetime_budget: createAdSetBody.lifetime_budget } : {}),
+          ...(callerDaily ? { daily_budget: createAdSetBody.daily_budget } : {}),
+        },
+        { accountId: accountPath },
+      );
+
       return {
         content: [
           {
             type: "text",
-            text: `Bundle cloned!\nAd Set: ${target_ad_set.name} (${result.new_ad_set.id})\nAds copied: ${result.created_ads.length}\nOverrides swapped: ${result.created_creatives.length}\nWarnings: ${result.warnings.length}\nSkipped (copy failed): ${result.skipped.length}`,
+            text: `Bundle cloned!\nAd Set: ${target_ad_set.name} (${result.new_ad_set.id})\nAds copied: ${result.created_ads.length}\nOverrides swapped: ${result.created_creatives.length}\nWarnings: ${result.warnings.length}\nSkipped (copy failed): ${result.skipped.length}${amountLines}`,
           },
           { type: "text", text: JSON.stringify(result, null, 2) },
         ],
@@ -820,11 +836,11 @@ export function registerAdSetTools(server: McpServer): void {
         name: z.string().min(1).describe("Ad set name"),
         destination_type: destinationTypeEnum.describe("Where the ad traffic is directed. Required for ODAX campaigns. Common values: WEBSITE (website traffic/conversions), APP (app installs), MESSENGER (Messenger conversations), WHATSAPP (WhatsApp conversations), INSTAGRAM_DIRECT (Instagram DMs), ON_AD (lead forms, instant experiences, post engagement), ON_VIDEO (video views), ON_PAGE (page engagement), SHOP_AUTOMATIC (shop)"),
         status: z.enum(["ACTIVE", "PAUSED"]).default("PAUSED"),
-        daily_budget: z.number().optional().describe("Ad-set daily budget in cents (e.g., 2000 = $20.00). Omit when the parent campaign has a daily or lifetime budget."),
-        lifetime_budget: z.number().optional().describe("Ad-set lifetime budget in cents. Omit when the parent campaign has a daily or lifetime budget."),
+        daily_budget: z.number().optional().describe(`Ad-set daily budget ${MINOR_UNIT_NOTE}. Omit when the parent campaign has a daily or lifetime budget.`),
+        lifetime_budget: z.number().optional().describe("Ad-set lifetime budget, in the same unit as daily_budget. Omit when the parent campaign has a daily or lifetime budget."),
         optimization_goal: optimizationGoalEnum.describe("Optimization goal"),
         billing_event: billingEventEnum.default("IMPRESSIONS"),
-        bid_amount: z.number().optional().describe("Bid cap in cents"),
+        bid_amount: z.number().optional().describe("Bid cap, in the same unit as daily_budget."),
         bid_strategy: bidStrategyEnum.optional(),
         targeting: targetingSchema,
         start_time: z.string().optional().describe("ISO 8601 start time"),
@@ -860,12 +876,13 @@ export function registerAdSetTools(server: McpServer): void {
       if (promoted_object) body.promoted_object = JSON.stringify(promoted_object);
 
       const result = await metaApiClient.postForm<{ id: string }>(`/${accountPath}/adsets`, body);
+      const amountLines = await statedAmounts(body, { accountId: accountPath });
 
       return {
         content: [
           {
             type: "text",
-            text: `Ad set created successfully!\nID: ${result.id}\nName: ${name}\nCampaign: ${campaignIdValidated}\nStatus: ${status}\nOptimization: ${optimization_goal}`,
+            text: `Ad set created successfully!\nID: ${result.id}\nName: ${name}\nCampaign: ${campaignIdValidated}\nStatus: ${status}\nOptimization: ${optimization_goal}${amountLines}`,
           },
         ],
       };
@@ -876,16 +893,16 @@ export function registerAdSetTools(server: McpServer): void {
   server.registerTool(
     "ads_update_ad_set",
     {
-      description: `${WRITE_WARNING}Update an existing ad set in place. Common use cases: change daily_budget or lifetime_budget (values in cents — e.g., 2000 = $20.00), pause/reactivate via status (ACTIVE/PAUSED), extend end_time, replace targeting, adjust bid_amount/bid_strategy, or rename. Only the fields you pass are sent to Meta — omitted fields keep their current value. lifetime_budget requires a corresponding end_time on the ad set. Authentication is handled transparently: the active Meta token is resolved from the request context (Sign in with Meta OAuth, registered System User token, or X-Meta-Token header in service-to-service mode). Note that meaningful changes to bid_amount, bid_strategy, or targeting can re-trigger Meta's learning phase.`,
+      description: `${WRITE_WARNING}Update an existing ad set in place. Common use cases: change daily_budget or lifetime_budget (unit: see daily_budget), pause/reactivate via status (ACTIVE/PAUSED), extend end_time, replace targeting, adjust bid_amount/bid_strategy, or rename. Only the fields you pass are sent to Meta — omitted fields keep their current value. lifetime_budget requires a corresponding end_time on the ad set. Authentication is handled transparently: the active Meta token is resolved from the request context (Sign in with Meta OAuth, registered System User token, or X-Meta-Token header in service-to-service mode). Note that meaningful changes to bid_amount, bid_strategy, or targeting can re-trigger Meta's learning phase.`,
       inputSchema: {
         ad_set_id: z.string().describe("Ad set ID to update"),
         name: z.string().optional().describe("New ad set name"),
         status: statusEnum.optional().describe("New status. Use ACTIVE to start delivery, PAUSED to stop, ARCHIVED to retire. Use ads_delete_ad_set for soft-deletion."),
         destination_type: destinationTypeEnum.optional().describe("Where the ad traffic is directed. Common values: WEBSITE (website traffic/conversions), APP (app installs), MESSENGER (Messenger conversations), WHATSAPP (WhatsApp conversations), INSTAGRAM_DIRECT (Instagram DMs), ON_AD (lead forms, instant experiences, post engagement), ON_VIDEO (video views), ON_PAGE (page engagement), SHOP_AUTOMATIC (shop)"),
-        daily_budget: z.number().optional().describe("Daily budget in cents (e.g., 2000 = $20.00). Mutually exclusive with lifetime_budget."),
-        lifetime_budget: z.number().optional().describe("Lifetime budget in cents. Requires the ad set to have an end_time set; pass end_time in the same call if it isn't already configured."),
+        daily_budget: z.number().optional().describe(`Daily budget ${MINOR_UNIT_NOTE}. Mutually exclusive with lifetime_budget.`),
+        lifetime_budget: z.number().optional().describe("Lifetime budget, in the same unit as daily_budget. Requires the ad set to have an end_time set; pass end_time in the same call if it isn't already configured."),
         targeting: targetingSchema.optional().describe("Replacement targeting spec. Replaces the entire targeting object — pass the full spec, not a partial one."),
-        bid_amount: z.number().optional().describe("Bid cap in cents. Only meaningful with bid_strategy = LOWEST_COST_WITH_BID_CAP or COST_CAP."),
+        bid_amount: z.number().optional().describe("Bid cap, in the same unit as daily_budget. Only meaningful with bid_strategy = LOWEST_COST_WITH_BID_CAP or COST_CAP."),
         bid_strategy: bidStrategyEnum.optional().describe("Bidding strategy. Changing strategy may require corresponding changes to bid_amount."),
         end_time: z.string().optional().describe("ISO 8601 end time. Required when setting or keeping lifetime_budget."),
       },
@@ -905,10 +922,11 @@ export function registerAdSetTools(server: McpServer): void {
       if (end_time !== undefined) body.end_time = end_time;
 
       await metaApiClient.postForm<{ success: boolean }>(`/${id}`, body);
+      const amountLines = await statedAmounts(body, { entityId: id });
 
       return {
         content: [
-          { type: "text", text: `Ad set ${id} updated successfully.\nChanges: ${JSON.stringify(body)}` },
+          { type: "text", text: `Ad set ${id} updated successfully.\nChanges: ${JSON.stringify(body)}${amountLines}` },
         ],
       };
     },

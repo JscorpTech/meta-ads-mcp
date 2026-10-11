@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { resolveTenantId } from "../auth/tenant.js";
 import { metaApiClient } from "../meta/client.js";
+import { formatMinorAmount } from "../meta/currency.js";
 import { AD_DEFAULT_FIELDS } from "../meta/types/ad.js";
 import { ADSET_DEFAULT_FIELDS } from "../meta/types/adset.js";
 import { CAMPAIGN_DEFAULT_FIELDS } from "../meta/types/campaign.js";
@@ -108,42 +109,11 @@ function count(value: unknown): string {
 }
 
 /**
- * Intl accepts any three-letter code, so ZZZ would format as "ZZZ 500.00".
- * The code is checked against the runtime's own list first.
- */
-const KNOWN_CURRENCIES = (() => {
-  try {
-    const supported = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf;
-    return supported ? new Set(supported("currency")) : undefined;
-  } catch {
-    return undefined;
-  }
-})();
-
-function isKnownCurrency(code: string): boolean {
-  if (!/^[A-Z]{3}$/.test(code)) return false;
-  // Without the runtime list, minor units are reported rather than a
-  // possibly meaningless conversion.
-  return KNOWN_CURRENCIES ? KNOWN_CURRENCIES.has(code) : false;
-}
-
-/**
- * Meta returns budgets as integers in the account currency's smallest unit,
- * and how many of those make a unit depends on the currency: 50000 is 500.00
- * EUR but 50,000 JPY. Intl knows the decimals; without a currency the raw
- * value is reported as what it is rather than silently divided by 100.
+ * Meta returns budgets as integers in a unit it defines per currency, which
+ * is not the ISO 4217 one Intl knows: 50000 is 500.00 USD but 50,000 COP.
  */
 function budget(value: unknown, currency?: string): string {
-  const parsed = num(value);
-  if (parsed === undefined) return "n/a";
-  if (!currency || !isKnownCurrency(currency)) return `${parsed.toLocaleString("en-US")} (minor units)`;
-  try {
-    const format = new Intl.NumberFormat("en-US", { style: "currency", currency });
-    const digits = format.resolvedOptions().maximumFractionDigits ?? 2;
-    return format.format(parsed / 10 ** digits);
-  } catch {
-    return `${parsed.toLocaleString("en-US")} (minor units)`;
-  }
+  return formatMinorAmount(num(value), currency);
 }
 
 /** Only a positive budget is the one in force: Meta sends "0" for the other kind. */

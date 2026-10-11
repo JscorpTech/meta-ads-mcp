@@ -134,6 +134,36 @@ export class MetaApiClient {
   }
 
   /**
+   * One GET kept apart from everything this client shares between requests,
+   * for a read that only words a result. Nothing it receives reaches the rate
+   * limiter, the write pacer or the circuit breaker, and it is never retried,
+   * so it cannot change what a later request does. It reads that state only
+   * to abstain: with the circuit open, or while the limiter would wait, it
+   * resolves to undefined without calling Meta. Any failure is undefined too.
+   * The caller owns the deadline: aborting `signal` cancels the body as well.
+   * The caller also names the token. This method never asks for the current
+   * one: where the active token is process-wide it can change between two
+   * awaits, and a caller that keys what it learns by token must be the one
+   * to fix it.
+   */
+  async getDetached<T>(
+    path: string,
+    params: Record<string, string | number | boolean | undefined>,
+    signal: AbortSignal,
+    token: string,
+  ): Promise<T | undefined> {
+    const tokenHash = hashToken(token);
+    const accountId = extractAccountId(path);
+    if (this.circuitBreaker.isOpen({ tokenHash, accountId, type: guessBucType("GET", path) })) return undefined;
+    if (this.rateLimiter.getThrottleDelay({ tokenHash, accountId }) > 0) return undefined;
+
+    const response = await fetch(this.appendToken(this.buildUrl(path, params), token), { method: "GET", signal });
+    const body = (await response.json()) as unknown;
+    if (!response.ok || isMetaApiError(body)) return undefined;
+    return body as T;
+  }
+
+  /**
    * Public snapshot for the `ads_rate_status` tool.
    */
   getUsageSnapshot() {

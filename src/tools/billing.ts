@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { metaApiClient } from "../meta/client.js";
 import { normalizeAccountId, validateMetaId, formatBudget } from "../utils/format.js";
+import { formatMinorAmount } from "../meta/currency.js";
 import { READ, UPDATE, WRITE_WARNING } from "./_register.js";
 
 interface BillingInfo {
@@ -45,9 +46,10 @@ const SPEND_FIELDS = [
   "spend_cap",
   "amount_spent",
   "balance",
-  "daily_spend_limit",
   "min_daily_budget",
 ].join(",");
+
+const SPEND_CAP_READ_BACK_FIELDS = "spend_cap,amount_spent,currency";
 
 interface SpendInfo {
   id: string;
@@ -56,7 +58,6 @@ interface SpendInfo {
   spend_cap?: string;
   amount_spent?: string;
   balance?: string;
-  daily_spend_limit?: string;
   min_daily_budget?: number;
 }
 
@@ -139,7 +140,7 @@ export function registerBillingTools(server: McpServer): void {
         { fields: BILLING_FIELDS },
       );
 
-      const currency = info.currency ?? "USD";
+      const currency = info.currency;
       const statusText = info.account_status !== undefined
         ? ACCOUNT_STATUS_MAP[info.account_status] ?? `UNKNOWN (${info.account_status})`
         : "N/A";
@@ -148,13 +149,13 @@ export function registerBillingTools(server: McpServer): void {
         `Account: ${info.name ?? info.id}`,
         `Business: ${info.business_name ?? "N/A"}`,
         `Status: ${statusText}`,
-        `Currency: ${currency}`,
+        `Currency: ${currency ?? "N/A"}`,
         `Timezone: ${info.timezone_name ?? "N/A"}`,
         ``,
         `Spending:`,
-        `  Amount Spent: ${info.amount_spent ? formatBudget(info.amount_spent, currency) : "N/A"}`,
-        `  Spend Cap: ${info.spend_cap ? formatBudget(info.spend_cap, currency) : "No limit"}`,
-        `  Balance: ${info.balance ? formatBudget(info.balance, currency) : "N/A"}`,
+        `  Amount Spent: ${info.amount_spent ? formatMinorAmount(info.amount_spent, currency) : "N/A"}`,
+        `  Spend Cap: ${info.spend_cap ? formatMinorAmount(info.spend_cap, currency) : "No limit"}`,
+        `  Balance: ${info.balance ? formatMinorAmount(info.balance, currency) : "N/A"}`,
       ];
 
       if (info.funding_source_details) {
@@ -193,7 +194,7 @@ export function registerBillingTools(server: McpServer): void {
         { fields: SPEND_FIELDS },
       );
 
-      const currency = info.currency ?? "USD";
+      const currency = info.currency;
 
       const spendCap = info.spend_cap ? parseInt(info.spend_cap, 10) : null;
       const amountSpent = info.amount_spent ? parseInt(info.amount_spent, 10) : null;
@@ -203,21 +204,20 @@ export function registerBillingTools(server: McpServer): void {
       const lines: string[] = [
         `Account: ${info.name ?? info.id}`,
         ``,
-        `Spend Cap: ${spendCap !== null ? formatBudget(spendCap, currency) : "No limit set"}`,
-        `Amount Spent: ${amountSpent !== null ? formatBudget(amountSpent, currency) : "N/A"}`,
+        `Spend Cap: ${spendCap !== null ? formatMinorAmount(spendCap, currency) : "No limit set"}`,
+        `Amount Spent: ${amountSpent !== null ? formatMinorAmount(amountSpent, currency) : "N/A"}`,
       ];
 
       if (remaining !== null) {
-        lines.push(`Remaining: ${formatBudget(remaining, currency)}`);
+        lines.push(`Remaining: ${formatMinorAmount(remaining, currency)}`);
         if (spendCap !== null && spendCap > 0) {
           const pctUsed = ((amountSpent! / spendCap) * 100).toFixed(1);
           lines.push(`Usage: ${pctUsed}% of spend cap used`);
         }
       }
 
-      if (info.balance) lines.push(`Balance: ${formatBudget(info.balance, currency)}`);
-      if (info.daily_spend_limit) lines.push(`Daily Spend Limit: ${formatBudget(info.daily_spend_limit, currency)}`);
-      if (info.min_daily_budget !== undefined) lines.push(`Min Daily Budget: ${formatBudget(info.min_daily_budget, currency)}`);
+      if (info.balance) lines.push(`Balance: ${formatMinorAmount(info.balance, currency)}`);
+      if (info.min_daily_budget !== undefined) lines.push(`Min Daily Budget: ${formatBudget(info.min_daily_budget, currency ?? "USD")}`);
 
       return {
         content: [
@@ -232,38 +232,59 @@ export function registerBillingTools(server: McpServer): void {
   server.registerTool(
     "ads_update_spend_cap",
     {
-      description: `${WRITE_WARNING}Update the spending limit (spend cap) for an ad account. Set to 0 or omit to remove the cap.`,
+      description: `${WRITE_WARNING}Set or remove the spend cap of an ad account: the total it may spend before delivery stops. The cap is written in the account currency's standard unit, with decimals where the currency has them: 500 = USD 500.00, 50000 = COP 50,000. This is NOT the minor unit used for daily_budget and the other budgets, where USD 500.00 is 50000. Setting a cap restarts the account's amount-spent counter. 0 removes the cap. The result reports the cap and the amount spent that Meta holds afterwards.`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         spend_cap: z
           .number()
           .min(0)
-          .describe("New spend cap in cents (e.g., 100000 = $1,000.00). Use 0 to remove."),
+          .describe("New spend cap in the account currency's standard unit (500 = USD 500.00, 50000 = COP 50,000), not the minor unit used for budgets. 0 removes the cap."),
       },
       annotations: { ...UPDATE },
     },
     async ({ account_id, spend_cap }) => {
       const id = normalizeAccountId(account_id);
 
-      const body: Record<string, string | number | boolean> = {};
-      if (spend_cap > 0) {
-        body.spend_cap = spend_cap;
-      } else {
-        body.spend_cap = 0;
-      }
+      // Meta ignores spend_cap=0 on this write; its documented way to remove
+      // a cap is spend_cap_action=delete.
+      const body: Record<string, string | number | boolean> = spend_cap > 0
+        ? { spend_cap }
+        : { spend_cap_action: "delete" };
 
       await metaApiClient.postForm<{ success: boolean }>(`/${id}`, body);
 
-      const displayAmount = spend_cap > 0 ? formatBudget(spend_cap) : "No limit (removed)";
+      const lines = [
+        `Spend cap updated for account ${account_id}.`,
+        spend_cap > 0
+          ? `Sent: spend_cap=${spend_cap} (in the account currency's standard unit)`
+          : "Sent: spend_cap_action=delete",
+      ];
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Spend cap updated for account ${account_id}.\nNew spend cap: ${displayAmount}`,
-          },
-        ],
-      };
+      // The cap is written in whole currency and read in the minor unit, so
+      // what Meta holds afterwards is the only figure worth reporting.
+      try {
+        const held = await metaApiClient.get<Pick<SpendInfo, "spend_cap" | "amount_spent" | "currency">>(
+          `/${id}`,
+          { fields: SPEND_CAP_READ_BACK_FIELDS },
+        );
+        // "none" is a claim about what Meta holds: only an explicit zero
+        // earns it. A read-back that leaves the field out confirms nothing.
+        const cap = held.spend_cap;
+        if (cap === undefined || cap === null) {
+          lines.push("Spend cap now: not confirmed (Meta's read-back did not include it). Check with ads_get_spend_limit.");
+        } else if (Number(cap) === 0) {
+          lines.push("Spend cap now: none (read back from Meta)");
+        } else {
+          lines.push(`Spend cap now: ${formatMinorAmount(cap, held.currency)} (read back from Meta)`);
+        }
+        if (held.amount_spent !== undefined) {
+          lines.push(`Amount spent now: ${formatMinorAmount(held.amount_spent, held.currency)} (read back from Meta)`);
+        }
+      } catch {
+        lines.push("The write succeeded, but what Meta now holds could not be confirmed: the read-back failed. Check with ads_get_spend_limit.");
+      }
+
+      return { content: [{ type: "text", text: lines.join("\n") }] };
     },
   );
 

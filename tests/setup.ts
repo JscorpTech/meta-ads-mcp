@@ -36,6 +36,29 @@ export function mockFetchResponse(
   } as unknown as Response;
 }
 
+/**
+ * Stub fetch for a write followed by the account-currency lookup: every POST
+ * gets `write`, GET /act_<id> gets `account`, any other GET gets `entity`.
+ */
+export function stubWriteAndCurrencyLookup(responses: {
+  write: unknown;
+  account?: unknown;
+  entity?: unknown;
+}): void {
+  const refused = { error: { code: 100, type: "OAuthException", message: "Unsupported get request." } };
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method === "POST") return mockFetchResponse(responses.write);
+    const body = /\/act_\d+$/.test(new URL(url).pathname) ? responses.account : responses.entity;
+    return body === undefined ? mockFetchResponse(refused, { status: 400 }) : mockFetchResponse(body);
+  }));
+}
+
+/** The fetch calls made so far, as "METHOD /path" without the API version. */
+export function fetchCallSummary(): string[] {
+  return vi.mocked(fetch).mock.calls.map(([url, init]) =>
+    `${init?.method ?? "GET"} ${new URL(String(url)).pathname.replace(/^\/v[\d.]+/, "")}`);
+}
+
 interface RegisteredTool {
   name: string;
   description: string;
