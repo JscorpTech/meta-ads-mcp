@@ -51,6 +51,24 @@ describe("adImageFileName", () => {
     expect(adImageFileName('ban"ner\nve\trano <1>: a|b?c*d', ".png")).toBe("banner ve rano 1 abcd.png");
   });
 
+  it("removes C1 control characters too", () => {
+    expect(adImageFileName("a\u0085b\u009fc\u0080", ".png")).toBe("abc.png");
+  });
+
+  it("a name cut at the limit never splits a character", () => {
+    const lone = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+    const result = adImageFileName("x".repeat(95) + "😀", ".png");
+    expect(result).not.toMatch(lone);
+    expect(result).not.toContain("�");
+    expect(result.endsWith(".png")).toBe(true);
+    expect(Array.from(result).length).toBeLessThanOrEqual(100);
+
+    const longer = adImageFileName("x".repeat(94) + "😀😀😀", ".png");
+    expect(longer).not.toMatch(lone);
+    expect(longer.endsWith(".png")).toBe(true);
+    expect(Array.from(longer).length).toBeLessThanOrEqual(100);
+  });
+
   it("falls back to image<ext> when nothing is left after cleaning", () => {
     expect(adImageFileName("... ..", ".png")).toBe("image.png");
     expect(adImageFileName("   ", ".jpg")).toBe("image.jpg");

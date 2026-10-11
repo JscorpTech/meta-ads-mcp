@@ -15,11 +15,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   uploaded through it was called `image.png` in the library (measured
   against a test ad account: `name: "o2-handoff-live-check.png"` came back as
   `image.png`). The file name is now built from `name`: last path segment
-  only, control characters and `" < > : | ? *` removed, whitespace
-  collapsed, leading dots dropped, the extension of the bytes actually
-  downloaded (a different image extension in the name is replaced, not
-  stacked), at most 100 characters. Without `name` it stays `image<ext>`. The
-  `name` field is still sent.
+  only, control characters (C0, DEL and C1) and `" < > : | ? *` removed,
+  whitespace collapsed, leading dots dropped, the extension the download
+  reported (derived from its content type; a different image extension in
+  the name is replaced, not stacked), at most 100 characters, counted by
+  code points so a character is never split. Without `name` it stays
+  `image<ext>`. The `name` field is still sent.
 - **ffmpeg's encoders are limited to one thread.** The wrapper passed
   `-threads 1` before `-i`, which bounds decoding, and `-filter_threads 1`,
   which bounds filtering; the encoders were unbounded, so libx264 sized its

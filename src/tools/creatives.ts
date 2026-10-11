@@ -54,7 +54,7 @@ export function adImageFileName(name: string | undefined, extension: string): st
     .split(/[/\\]/)
     .pop()!
     .replace(/\s+/g, " ")
-    .replace(/[\u0000-\u001f\u007f"<>:|?*]/g, "")
+    .replace(/[\u0000-\u001f\u007f-\u009f"<>:|?*]/g, "")
     .replace(/\s+/g, " ")
     .replace(/^[.\s]+/, "")
     .trim();
@@ -74,7 +74,7 @@ export function adImageFileName(name: string | undefined, extension: string): st
     base = base.slice(0, dot);
   }
 
-  base = base.slice(0, Math.max(0, AD_IMAGE_FILE_NAME_MAX - ext.length)).trimEnd();
+  base = Array.from(base).slice(0, Math.max(0, AD_IMAGE_FILE_NAME_MAX - ext.length)).join("").trimEnd();
   return base ? `${base}${ext}` : fallback;
 }
 
