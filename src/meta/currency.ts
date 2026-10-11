@@ -52,6 +52,24 @@ export function describeMinorAmount(amount: number, currency: string): string | 
   return `${code} ${GROUPED.format(Math.trunc(amount / offset))}.${String(amount % offset).padStart(2, "0")}`;
 }
 
+/**
+ * An amount read from Meta (a budget, a bid, or an ad account's amount_spent,
+ * balance or spend_cap) as display text. Without a currency, or with one that
+ * is not in Meta's table, the raw number is shown with its unit named: it is
+ * never divided on a guess. Not for insights figures such as spend or cpc,
+ * which Meta already returns in whole currency.
+ */
+export function formatMinorAmount(amount: unknown, currency: string | undefined): string {
+  const value = typeof amount === "string" && /^-?\d+(\.\d+)?$/.test(amount) ? Number(amount) : amount;
+  if (typeof value !== "number" || !Number.isFinite(value)) return "n/a";
+  const raw = typeof amount === "string" ? amount : String(value);
+  const code = normalizeCode(currency);
+  if (code === undefined) return `${raw} (in the account currency's minor unit)`;
+  const described = describeMinorAmount(Math.abs(value), code);
+  if (described === undefined) return `${raw} (in the minor unit of ${code})`;
+  return value < 0 ? described.replace(`${code} `, `${code} -`) : described;
+}
+
 /** One line of a tool result stating an amount, with the raw value when it cannot be converted. */
 export function amountLine(label: string, amount: number, currency: string | undefined): string {
   const code = normalizeCode(currency);

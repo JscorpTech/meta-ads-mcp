@@ -36,8 +36,26 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   currency the line gives the raw amount and says it is in the account
   currency's minor unit. `ads_clone_ad_set_bundle` restates only a budget
   passed in `target_ad_set`, not one copied from the source.
-  `ads_update_spend_cap` is unchanged: Meta documents that write in whole
-  currency units, not minor units, so its description is a separate fix.
+  The description of `ads_update_spend_cap` and the value it sends are
+  unchanged: Meta documents that write in whole currency units, not minor
+  units, which needs a check against a live account first.
+- **Amounts read from Meta are shown by Meta's offset, not divided by 100
+  or by ISO 4217 decimals.** `ads_get_billing_info` and `ads_get_spend_limit`
+  divided every amount by 100, so a COP account's 5,000,000 spent read
+  `50000.00 COP`; they now show `COP 5,000,000`, and `USD 500.00` for 50000
+  in a USD account. `ads_get_ad_dossier` took the decimals from `Intl`, which
+  follows ISO 4217: budgets in COP, CRC, HUF, IDR and TWD came out 100 times
+  too small and those in BHD and JOD divided by 1,000. All three use the
+  table in `src/meta/currency.ts`. Without a currency, or with one that is
+  not in the table, the raw number is shown with its unit named
+  (`50000 (in the account currency's minor unit)`); the billing tools no
+  longer assume USD. Insights figures (`spend`, `cpc`, `cpm`), which Meta
+  returns in whole currency, are not touched. `Daily Spend Limit` and
+  `Min Daily Budget` in `ads_get_spend_limit` still divide by 100: Meta's
+  reference does not state their unit.
+- **`ads_update_spend_cap` no longer answers in "USD".** Its result divided
+  the value by 100 and labelled it USD for every account. It now echoes the
+  value as sent and points to `ads_get_spend_limit` to read it back.
 - **ffmpeg's encoders are limited to one thread.** The wrapper passed
   `-threads 1` before `-i`, which bounds decoding, and `-filter_threads 1`,
   which bounds filtering; the encoders were unbounded, so libx264 sized its

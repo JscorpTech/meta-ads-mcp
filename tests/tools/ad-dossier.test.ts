@@ -438,14 +438,51 @@ describe("round-1 review fixes", () => {
     expect(brief).not.toMatch(/daily budget 0\b/);
   });
 
-  it("renders a budget with the account currency's own decimals", async () => {
-    // JPY has no minor unit: 50000 is 50,000 yen, not 500.00.
-    const yen = { data: [{ ...INSIGHTS.data[0], account_currency: "JPY" }] };
-    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/8001/insights": yen, "/6001": { ...CAMPAIGN, daily_budget: "50000" } }));
+  // Meta's offset, not ISO 4217: COP, CRC, HUF, IDR and TWD have two ISO
+  // decimals but are whole units here, and BHD and JOD have three but are
+  // hundredths.
+  it.each([
+    ["COP", "50000", "daily budget COP 50,000"],
+    ["USD", "50000", "daily budget USD 500.00"],
+    ["JPY", "50000", "daily budget JPY 50,000"],
+    ["IDR", "750000", "daily budget IDR 750,000"],
+    ["BHD", "50000", "daily budget BHD 500.00"],
+  ])("renders a %s campaign budget by Meta's offset for that currency", async (code, raw, expected) => {
+    const insights = { data: [{ ...INSIGHTS.data[0], account_currency: code }] };
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/8001/insights": insights, "/6001": { ...CAMPAIGN, daily_budget: raw } }));
     const { call } = setup();
     const brief = (await call({})).content[0].text as string;
-    expect(brief).toMatch(/50,000/);
-    expect(brief).not.toMatch(/daily budget 500\b/);
+    const campaignLine = brief.split("\n").find((line) => line.startsWith("Campaign 6001"));
+    expect(campaignLine?.endsWith(` · ${expected}`)).toBe(true);
+  });
+
+  it("renders the ad set budget and a lifetime budget the same way", async () => {
+    const insights = { data: [{ ...INSIGHTS.data[0], account_currency: "COP" }] };
+    vi.stubGlobal("fetch", routeFetch({
+      ...ROUTES,
+      "/8001/insights": insights,
+      "/6001": { ...CAMPAIGN, daily_budget: "0", lifetime_budget: "3000000" },
+    }));
+    const { call } = setup();
+    const brief = (await call({})).content[0].text as string;
+    expect(brief).toContain(" · lifetime budget COP 3,000,000");
+    expect(brief).toContain(" · daily budget COP 5,000 · LOWEST_COST_WITHOUT_CAP");
+  });
+
+  it("shows the raw budget and its unit when insights gave no currency", async () => {
+    vi.stubGlobal("fetch", routeFetch(ROUTES));
+    const { call } = setup();
+    const brief = (await call({})).content[0].text as string;
+    expect(brief).toContain(" · daily budget 20000 (in the account currency's minor unit)");
+  });
+
+  it("leaves insights spend as Meta sent it: it is already in whole currency", async () => {
+    const insights = { data: [{ ...INSIGHTS.data[0], account_currency: "COP" }] };
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/8001/insights": insights }));
+    const { call } = setup();
+    const brief = (await call({})).content[0].text as string;
+    expect(brief).toContain("Spend 1,234.56 COP · ");
+    expect(brief).toContain("CPC 0.4 · CPM 4.94");
   });
 });
 
@@ -479,12 +516,12 @@ describe("round-2 review fixes", () => {
     expect(JSON.stringify(result.content)).toContain(signed);
   });
 
-  it("falls back to minor units for a currency code Intl does not know", async () => {
+  it("falls back to minor units for a currency code that is not in Meta's table", async () => {
     const unknown = { data: [{ ...INSIGHTS.data[0], account_currency: "ZZZ" }] };
     vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/8001/insights": unknown, "/6001": { ...CAMPAIGN, daily_budget: "50000" } }));
     const { call } = setup();
     const brief = (await call({})).content[0].text as string;
-    expect(brief).toMatch(/50,000 \(minor units\)/);
+    expect(brief).toContain(" · daily budget 50000 (in the minor unit of ZZZ)");
     expect(brief).not.toMatch(/ZZZ\s?500/);
   });
 

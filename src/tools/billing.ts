@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { metaApiClient } from "../meta/client.js";
 import { normalizeAccountId, validateMetaId, formatBudget } from "../utils/format.js";
+import { formatMinorAmount } from "../meta/currency.js";
 import { READ, UPDATE, WRITE_WARNING } from "./_register.js";
 
 interface BillingInfo {
@@ -139,7 +140,7 @@ export function registerBillingTools(server: McpServer): void {
         { fields: BILLING_FIELDS },
       );
 
-      const currency = info.currency ?? "USD";
+      const currency = info.currency;
       const statusText = info.account_status !== undefined
         ? ACCOUNT_STATUS_MAP[info.account_status] ?? `UNKNOWN (${info.account_status})`
         : "N/A";
@@ -148,13 +149,13 @@ export function registerBillingTools(server: McpServer): void {
         `Account: ${info.name ?? info.id}`,
         `Business: ${info.business_name ?? "N/A"}`,
         `Status: ${statusText}`,
-        `Currency: ${currency}`,
+        `Currency: ${currency ?? "N/A"}`,
         `Timezone: ${info.timezone_name ?? "N/A"}`,
         ``,
         `Spending:`,
-        `  Amount Spent: ${info.amount_spent ? formatBudget(info.amount_spent, currency) : "N/A"}`,
-        `  Spend Cap: ${info.spend_cap ? formatBudget(info.spend_cap, currency) : "No limit"}`,
-        `  Balance: ${info.balance ? formatBudget(info.balance, currency) : "N/A"}`,
+        `  Amount Spent: ${info.amount_spent ? formatMinorAmount(info.amount_spent, currency) : "N/A"}`,
+        `  Spend Cap: ${info.spend_cap ? formatMinorAmount(info.spend_cap, currency) : "No limit"}`,
+        `  Balance: ${info.balance ? formatMinorAmount(info.balance, currency) : "N/A"}`,
       ];
 
       if (info.funding_source_details) {
@@ -193,7 +194,7 @@ export function registerBillingTools(server: McpServer): void {
         { fields: SPEND_FIELDS },
       );
 
-      const currency = info.currency ?? "USD";
+      const currency = info.currency;
 
       const spendCap = info.spend_cap ? parseInt(info.spend_cap, 10) : null;
       const amountSpent = info.amount_spent ? parseInt(info.amount_spent, 10) : null;
@@ -203,21 +204,21 @@ export function registerBillingTools(server: McpServer): void {
       const lines: string[] = [
         `Account: ${info.name ?? info.id}`,
         ``,
-        `Spend Cap: ${spendCap !== null ? formatBudget(spendCap, currency) : "No limit set"}`,
-        `Amount Spent: ${amountSpent !== null ? formatBudget(amountSpent, currency) : "N/A"}`,
+        `Spend Cap: ${spendCap !== null ? formatMinorAmount(spendCap, currency) : "No limit set"}`,
+        `Amount Spent: ${amountSpent !== null ? formatMinorAmount(amountSpent, currency) : "N/A"}`,
       ];
 
       if (remaining !== null) {
-        lines.push(`Remaining: ${formatBudget(remaining, currency)}`);
+        lines.push(`Remaining: ${formatMinorAmount(remaining, currency)}`);
         if (spendCap !== null && spendCap > 0) {
           const pctUsed = ((amountSpent! / spendCap) * 100).toFixed(1);
           lines.push(`Usage: ${pctUsed}% of spend cap used`);
         }
       }
 
-      if (info.balance) lines.push(`Balance: ${formatBudget(info.balance, currency)}`);
-      if (info.daily_spend_limit) lines.push(`Daily Spend Limit: ${formatBudget(info.daily_spend_limit, currency)}`);
-      if (info.min_daily_budget !== undefined) lines.push(`Min Daily Budget: ${formatBudget(info.min_daily_budget, currency)}`);
+      if (info.balance) lines.push(`Balance: ${formatMinorAmount(info.balance, currency)}`);
+      if (info.daily_spend_limit) lines.push(`Daily Spend Limit: ${formatBudget(info.daily_spend_limit, currency ?? "USD")}`);
+      if (info.min_daily_budget !== undefined) lines.push(`Min Daily Budget: ${formatBudget(info.min_daily_budget, currency ?? "USD")}`);
 
       return {
         content: [
@@ -254,7 +255,9 @@ export function registerBillingTools(server: McpServer): void {
 
       await metaApiClient.postForm<{ success: boolean }>(`/${id}`, body);
 
-      const displayAmount = spend_cap > 0 ? formatBudget(spend_cap) : "No limit (removed)";
+      const displayAmount = spend_cap > 0
+        ? `${spend_cap} (the value as sent to Meta; read it back with ads_get_spend_limit)`
+        : "No limit (removed)";
 
       return {
         content: [

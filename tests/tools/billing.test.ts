@@ -62,7 +62,7 @@ describe("registerBillingTools", () => {
       expect(result.content[0].text).toContain("Test Account");
       expect(result.content[0].text).toContain("Test Business");
       expect(result.content[0].text).toContain("ACTIVE");
-      expect(result.content[0].text).toContain("500.00 USD");
+      expect(result.content[0].text).toContain("  Amount Spent: USD 500.00");
       expect(result.content[0].text).toContain("Visa ending in 4242");
     });
   });
@@ -88,7 +88,7 @@ describe("registerBillingTools", () => {
         content: Array<{ type: string; text: string }>;
       };
 
-      expect(result.content[0].text).toContain("750.00 USD");
+      expect(result.content[0].text).toContain("Amount Spent: USD 750.00");
       expect(result.content[0].text).toContain("75.0%");
     });
   });
@@ -106,7 +106,36 @@ describe("registerBillingTools", () => {
       };
 
       expect(result.content[0].text).toContain("Spend cap updated");
-      expect(result.content[0].text).toContain("1000.00 USD");
+    });
+
+    it("echoes the value as sent, without a currency or a conversion it cannot vouch for", async () => {
+      const server = createMockMcpServer();
+      registerBillingTools(server as never);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ success: true })));
+
+      const result = await server._registeredTools[2].handler({ account_id: "123", spend_cap: 100000 }) as {
+        content: Array<{ type: string; text: string }>;
+      };
+
+      expect(result.content[0].text).toBe(
+        "Spend cap updated for account 123.\nNew spend cap: 100000 (the value as sent to Meta; read it back with ads_get_spend_limit)",
+      );
+      expect(result.content[0].text).not.toContain("USD");
+      expect(result.content[0].text).not.toContain("1000.00");
+    });
+
+    it("sends the value exactly as before and makes no other request", async () => {
+      const server = createMockMcpServer();
+      registerBillingTools(server as never);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ success: true })));
+
+      await server._registeredTools[2].handler({ account_id: "123", spend_cap: 100000 });
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const [url, init] = vi.mocked(fetch).mock.calls[0];
+      expect(new URL(String(url)).pathname).toMatch(/\/act_123$/);
+      expect(init?.method).toBe("POST");
+      expect(new URLSearchParams(init?.body as string).get("spend_cap")).toBe("100000");
     });
 
     it("handles removing spend cap (setting to 0)", async () => {
@@ -121,6 +150,88 @@ describe("registerBillingTools", () => {
       };
 
       expect(result.content[0].text).toContain("No limit (removed)");
+    });
+  });
+
+  describe("amounts read from the account, in its own currency", () => {
+    type TextResult = { content: Array<{ type: string; text: string }> };
+
+    const read = async (toolIndex: number, account: Record<string, unknown>) => {
+      const server = createMockMcpServer();
+      registerBillingTools(server as never);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ id: "act_123", name: "Cuenta", ...account })));
+      const result = await server._registeredTools[toolIndex].handler({ account_id: "123" }) as TextResult;
+      return result.content[0].text.split("\n");
+    };
+
+    it("ads_get_billing_info: a COP account's amounts are whole pesos", async () => {
+      const lines = await read(0, { currency: "COP", amount_spent: "5000000", spend_cap: "10000000", balance: "250000" });
+
+      expect(lines).toContain("Currency: COP");
+      expect(lines).toContain("  Amount Spent: COP 5,000,000");
+      expect(lines).toContain("  Spend Cap: COP 10,000,000");
+      expect(lines).toContain("  Balance: COP 250,000");
+    });
+
+    it("ads_get_billing_info: a USD account's amounts are hundredths of a dollar", async () => {
+      const lines = await read(0, { currency: "USD", amount_spent: "50000", spend_cap: "100000", balance: "20000" });
+
+      expect(lines).toContain("  Amount Spent: USD 500.00");
+      expect(lines).toContain("  Spend Cap: USD 1,000.00");
+      expect(lines).toContain("  Balance: USD 200.00");
+    });
+
+    it("ads_get_billing_info: without a currency it shows the raw numbers and does not assume USD", async () => {
+      const lines = await read(0, { amount_spent: "5000000", spend_cap: "10000000", balance: "250000" });
+
+      expect(lines).toContain("Currency: N/A");
+      expect(lines).toContain("  Amount Spent: 5000000 (in the account currency's minor unit)");
+      expect(lines).toContain("  Spend Cap: 10000000 (in the account currency's minor unit)");
+      expect(lines).toContain("  Balance: 250000 (in the account currency's minor unit)");
+      expect(lines.join("\n")).not.toContain("USD");
+    });
+
+    it("ads_get_billing_info: keeps its words for an amount Meta did not send", async () => {
+      const lines = await read(0, { currency: "COP" });
+
+      expect(lines).toContain("  Amount Spent: N/A");
+      expect(lines).toContain("  Spend Cap: No limit");
+      expect(lines).toContain("  Balance: N/A");
+    });
+
+    it("ads_get_spend_limit: a COP account's amounts are whole pesos", async () => {
+      const lines = await read(1, { currency: "COP", spend_cap: "10000000", amount_spent: "7500000", balance: "250000" });
+
+      expect(lines).toContain("Spend Cap: COP 10,000,000");
+      expect(lines).toContain("Amount Spent: COP 7,500,000");
+      expect(lines).toContain("Remaining: COP 2,500,000");
+      expect(lines).toContain("Usage: 75.0% of spend cap used");
+      expect(lines).toContain("Balance: COP 250,000");
+    });
+
+    it("ads_get_spend_limit: a USD account's amounts are hundredths of a dollar", async () => {
+      const lines = await read(1, { currency: "USD", spend_cap: "100000", amount_spent: "75000", balance: "25000" });
+
+      expect(lines).toContain("Spend Cap: USD 1,000.00");
+      expect(lines).toContain("Amount Spent: USD 750.00");
+      expect(lines).toContain("Remaining: USD 250.00");
+      expect(lines).toContain("Balance: USD 250.00");
+    });
+
+    it("ads_get_spend_limit: an overspent cap leaves a negative remainder in the same unit", async () => {
+      const lines = await read(1, { currency: "COP", spend_cap: "1000000", amount_spent: "1250000" });
+
+      expect(lines).toContain("Remaining: COP -250,000");
+    });
+
+    it("ads_get_spend_limit: without a currency it shows the raw numbers and does not assume USD", async () => {
+      const lines = await read(1, { spend_cap: "10000000", amount_spent: "7500000", balance: "250000" });
+
+      expect(lines).toContain("Spend Cap: 10000000 (in the account currency's minor unit)");
+      expect(lines).toContain("Amount Spent: 7500000 (in the account currency's minor unit)");
+      expect(lines).toContain("Remaining: 2500000 (in the account currency's minor unit)");
+      expect(lines).toContain("Balance: 250000 (in the account currency's minor unit)");
+      expect(lines.join("\n")).not.toContain("USD");
     });
   });
 
