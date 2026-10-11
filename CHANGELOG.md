@@ -9,6 +9,18 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **`ads_upload_ad_image` names the image after the `name` argument.** Meta
+  names an ad image after the multipart file name and ignores the separate
+  `name` field, and the tool always sent `image<ext>`, so every image
+  uploaded through it was called `image.png` in the library (measured
+  against a test ad account: `name: "o2-handoff-live-check.png"` came back as
+  `image.png`). The file name is now built from `name`: last path segment
+  only, control characters (C0, DEL and C1) and `" < > : | ? *` removed,
+  whitespace collapsed, leading dots dropped, the extension the download
+  reported (derived from its content type; a different image extension in
+  the name is replaced, not stacked), at most 100 characters, counted by
+  code points so a character is never split. Without `name` it stays
+  `image<ext>`. The `name` field is still sent.
 - **Budgets and bids are no longer described as "cents" for every
   currency.** The tool descriptions said `5000` is `$50.00` whatever the
   account, which is true only where Meta's currency offset is 100. For the
