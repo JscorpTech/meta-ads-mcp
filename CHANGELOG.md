@@ -39,7 +39,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   or the circuit breaker, it is never retried, it is cancelled (body
   included) at two seconds, and at most eight run at once. It makes no
   request while the account's circuit is open or the rate limiter would
-  wait. Without a currency the line gives the raw amount and says it is in
+  wait. The token is fixed when the lookup starts: both of its requests and
+  the entry it remembers belong to that one, even if the process-wide active
+  token changes meanwhile (API-key and stdio mode). Without a currency the line gives the raw amount and says it is in
   the account currency's minor unit. `ads_clone_ad_set_bundle` restates
   only a budget passed in `target_ad_set` that was actually sent, not one
   copied from the source.

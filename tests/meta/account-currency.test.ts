@@ -204,6 +204,27 @@ describe("account currency lookup", () => {
       expect(fetch).not.toHaveBeenCalled();
     });
 
+    it("judges the circuit of the token it is given, not of whichever token is current", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(throttled()));
+      await requestContext.run({ accessToken: "tenant-a-token" }, async () => {
+        for (let i = 0; i < 3; i++) await expect(write()).rejects.toThrow();
+      });
+      vi.mocked(fetch).mockClear();
+      vi.mocked(fetch).mockResolvedValue(mockFetchResponse({ currency: "COP" }));
+      const signal = new AbortController().signal;
+      const read = (token: string) => metaApiClient.getDetached("/act_123", { fields: "currency" }, signal, token);
+
+      await requestContext.run({ accessToken: "tenant-b-token" }, async () => {
+        await expect(read("tenant-a-token")).resolves.toBeUndefined();
+      });
+      expect(fetch).not.toHaveBeenCalled();
+
+      await requestContext.run({ accessToken: "tenant-a-token" }, async () => {
+        await expect(read("tenant-b-token")).resolves.toEqual({ currency: "COP" });
+      });
+      expect(new URL(String(vi.mocked(fetch).mock.calls[0][0])).searchParams.get("access_token")).toBe("tenant-b-token");
+    });
+
     it("abstains, without a request, while the rate limiter would make the client wait", async () => {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ id: "1" }, {
         headers: { "x-ad-account-usage": JSON.stringify({ acc_id_util_pct: 90 }) },

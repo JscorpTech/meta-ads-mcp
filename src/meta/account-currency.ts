@@ -1,4 +1,4 @@
-import { getAccessTokenHash } from "../auth/token-store.js";
+import { getAccessToken, hashToken } from "../auth/token-store.js";
 import { metaApiClient } from "./client.js";
 import { amountLine } from "./currency.js";
 
@@ -30,11 +30,11 @@ function remember(key: string, value: string): void {
 
 const fromMemory: Read = async (key) => remembered.get(key);
 
-function fromMeta(signal: AbortSignal): Read {
+function fromMeta(signal: AbortSignal, token: string): Read {
   return async (key, path, field, accept) => {
     const known = remembered.get(key);
     if (known !== undefined) return known;
-    const response = await metaApiClient.getDetached<Record<string, unknown>>(path, { fields: field }, signal);
+    const response = await metaApiClient.getDetached<Record<string, unknown>>(path, { fields: field }, signal, token);
     const value = response?.[field];
     if (signal.aborted || typeof value !== "string" || !accept.test(value)) return undefined;
     remember(key, value);
@@ -58,12 +58,16 @@ async function resolveCurrency(tokenHash: string, owner: Owner, read: Read): Pro
 }
 
 async function lookup(owner: Owner): Promise<string | undefined> {
-  let tokenHash: string;
+  // The token is read once, here, before anything is awaited. Where it is
+  // process-wide it can change during the lookup, and the cache key and
+  // every request of this lookup must belong to the same one.
+  let token: string;
   try {
-    tokenHash = getAccessTokenHash();
+    token = getAccessToken();
   } catch {
     return undefined;
   }
+  const tokenHash = hashToken(token);
 
   const known = await resolveCurrency(tokenHash, owner, fromMemory);
   if (known !== undefined) return known;
@@ -77,7 +81,7 @@ async function lookup(owner: Owner): Promise<string | undefined> {
     controller.signal.addEventListener("abort", () => resolve(undefined), { once: true });
   });
   try {
-    const answer = resolveCurrency(tokenHash, owner, fromMeta(controller.signal)).catch(() => undefined);
+    const answer = resolveCurrency(tokenHash, owner, fromMeta(controller.signal, token)).catch(() => undefined);
     return await Promise.race([answer, cancelled]);
   } finally {
     clearTimeout(timer);

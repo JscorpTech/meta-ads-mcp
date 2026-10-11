@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { registerCampaignTools } from "../../src/tools/campaigns.js";
 import { metaApiClient } from "../../src/meta/client.js";
-import { resetAccountCurrencyCacheForTests } from "../../src/meta/account-currency.js";
+import {
+  accountCurrency,
+  entityAccountCurrency,
+  resetAccountCurrencyCacheForTests,
+} from "../../src/meta/account-currency.js";
+import { tokenManager } from "../../src/auth/token-manager.js";
 import {
   createMockMcpServer,
   setupTestToken,
@@ -423,6 +428,117 @@ describe("registerCampaignTools", () => {
 
       expect(fetchCallSummary().filter((call) => call === "POST /100123")).toHaveLength(4);
       expect(metaApiClient.getUsageSnapshot().circuits).toEqual([]);
+    });
+
+    // API-key and stdio mode keep the active token in the process, where
+    // ads_set_active_token can change it between two awaits of another call.
+    describe("when the process-wide active token changes during the lookup", () => {
+      const refused = () => mockFetchResponse(
+        { error: { code: 100, type: "OAuthException", message: "Unsupported get request." } },
+        { status: 400 },
+      );
+
+      /** `onRead(n)` runs after the n-th time anything asks for the active token. */
+      const activeToken = (initial: string) => {
+        const state = { active: initial, reads: 0, onRead: (_reads: number): void => undefined };
+        vi.spyOn(tokenManager, "getActiveToken").mockImplementation(() => {
+          state.reads += 1;
+          const value = state.active;
+          state.onRead(state.reads);
+          return value;
+        });
+        return state;
+      };
+
+      /** Every request so far as "METHOD /path token". */
+      const requests = () => vi.mocked(fetch).mock.calls.map(([url, init]) => {
+        const parsed = new URL(String(url));
+        return `${init?.method ?? "GET"} ${parsed.pathname.replace(/^\/v[\d.]+/, "")} ${parsed.searchParams.get("access_token")}`;
+      });
+
+      /** Answers each GET according to the token it carries; every POST succeeds. */
+      const stubByToken = (answers: Record<string, (path: string) => Response>, onGet?: (path: string) => void) => {
+        vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+          if (init?.method === "POST") return mockFetchResponse({ id: "1000400", success: true });
+          const parsed = new URL(url);
+          const path = parsed.pathname.replace(/^\/v[\d.]+/, "");
+          onGet?.(path);
+          return answers[parsed.searchParams.get("access_token") ?? ""]?.(path) ?? refused();
+        }));
+      };
+
+      // The write reads the token first; the lookup's own read is the second.
+      // Switching in a microtask after it lands in the lookup's first await.
+      const switchDuringTheLookup = (state: ReturnType<typeof activeToken>, to: string) => {
+        state.onRead = (reads) => {
+          if (reads === 2) queueMicrotask(() => { state.active = to; });
+        };
+      };
+
+      it("create: the GET carries the token the lookup started with, and its answer is kept for that token only", async () => {
+        const state = activeToken("token-A");
+        switchDuringTheLookup(state, "token-B");
+        stubByToken({ "token-A": () => mockFetchResponse({ currency: "COP" }) });
+
+        const text = await create({ daily_budget: 50000 });
+
+        expect(state.active).toBe("token-B");
+        expect(requests()).toEqual(["POST /act_123/campaigns token-A", "GET /act_123 token-A"]);
+        expect(text.split("\n")).toContain("Daily budget: COP 50,000 (account currency COP)");
+
+        await expect(accountCurrency("act_123")).resolves.toBeUndefined();
+        expect(requests().at(-1)).toBe("GET /act_123 token-B");
+
+        state.active = "token-A";
+        await expect(accountCurrency("act_123")).resolves.toBe("COP");
+        expect(requests()).toHaveLength(3);
+      });
+
+      // The audit's scenario: A's own GET would fail, B's succeeds.
+      it("create: back on the first token, nothing obtained with the second answers for it", async () => {
+        const state = activeToken("token-A");
+        switchDuringTheLookup(state, "token-B");
+        stubByToken({ "token-B": () => mockFetchResponse({ currency: "COP" }) });
+
+        const text = await create({ daily_budget: 50000 });
+
+        expect(state.active).toBe("token-B");
+        expect(requests()).toEqual(["POST /act_123/campaigns token-A", "GET /act_123 token-A"]);
+        expect(text.split("\n")).toContain(
+          "Daily budget: 50000 in the account currency's minor unit (currency not confirmed; check ads_get_account_info)",
+        );
+
+        state.active = "token-A";
+        await expect(accountCurrency("act_123")).resolves.toBeUndefined();
+        expect(requests().at(-1)).toBe("GET /act_123 token-A");
+        expect(requests()).toHaveLength(3);
+      });
+
+      it("update: both reads of the lookup carry one token, even if it changes between them", async () => {
+        const state = activeToken("token-A");
+        stubByToken(
+          {
+            "token-A": (path) => mockFetchResponse(path === "/100123" ? { account_id: "123" } : { currency: "COP" }),
+            "token-B": (path) => mockFetchResponse(path === "/100123" ? { account_id: "999" } : { currency: "USD" }),
+          },
+          (path) => {
+            if (path === "/100123") state.active = "token-B";
+          },
+        );
+
+        const text = await update({ daily_budget: 75000 });
+
+        expect(state.active).toBe("token-B");
+        expect(requests()).toEqual(["POST /100123 token-A", "GET /100123 token-A", "GET /act_123 token-A"]);
+        expect(text.split("\n")).toContain("Daily budget: COP 75,000 (account currency COP)");
+
+        await expect(entityAccountCurrency("100123")).resolves.toBe("USD");
+        expect(requests().slice(3)).toEqual(["GET /100123 token-B", "GET /act_999 token-B"]);
+
+        state.active = "token-A";
+        await expect(entityAccountCurrency("100123")).resolves.toBe("COP");
+        expect(requests()).toHaveLength(5);
+      });
     });
 
     it("update: finds the campaign's account and states the new budget in its currency", async () => {
