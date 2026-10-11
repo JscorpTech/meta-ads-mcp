@@ -204,11 +204,6 @@ describe("registerAllTools", () => {
 describe("money amounts in what a model reads on tools/list", () => {
   const AMOUNT_PARAMETERS = ["daily_budget", "lifetime_budget", "bid_amount", "budget_value"];
 
-  // Meta documents the write of an ad account's spend_cap in whole currency
-  // units ("23.50 for USD $23.50"), unlike budgets and bids, so what that
-  // description should say is a separate question from the one settled here.
-  const UNIT_STILL_OPEN = ["ads_update_spend_cap"];
-
   interface Published {
     name: string;
     /** The tool description and every parameter description, nested ones included. */
@@ -253,7 +248,6 @@ describe("money amounts in what a model reads on tools/list", () => {
 
   it("no description says 'cents' without itself naming the currencies that have none", () => {
     const offenders = published()
-      .filter((tool) => !UNIT_STILL_OPEN.includes(tool.name))
       .flatMap((tool) => tool.descriptions
         .filter((text) => saysCents(text) && !namesWholeUnitCurrencies(text))
         .map((text) => `${tool.name}: ${text}`));
@@ -284,11 +278,39 @@ describe("money amounts in what a model reads on tools/list", () => {
     expect(generic?.descriptions.some((text) => text.includes(MINOR_UNIT_NOTE))).toBe(true);
   });
 
-  it("the exemption list holds only tools that still need it", () => {
-    const tools = published();
-    for (const name of UNIT_STILL_OPEN) {
-      const descriptions = tools.find((tool) => tool.name === name)?.descriptions ?? [];
-      expect(descriptions.some((text) => saysCents(text) && !namesWholeUnitCurrencies(text)), name).toBe(true);
-    }
+  // Verified against a live USD account: the cap is written in whole
+  // currency (1000000 sent, "100000000" read back), unlike budgets and bids.
+  describe("the account spend cap, which is not in the minor unit", () => {
+    const spendCap = () => published().find((tool) => tool.name === "ads_update_spend_cap")!;
+
+    it("is the only tool that takes a spend_cap", () => {
+      const taking = published().filter((tool) => tool.parameters.has("spend_cap")).map((tool) => tool.name);
+      expect(taking).toEqual(["ads_update_spend_cap"]);
+    });
+
+    it.each(["the tool description", "the parameter description"])("%s names the standard unit with an example of each kind", (which) => {
+      const [tool, ...parameters] = spendCap().descriptions;
+      const text = which === "the tool description" ? tool : parameters.find((description) => /spend cap/i.test(description)) ?? "";
+      expect(text).toMatch(/standard unit/);
+      expect(text).toMatch(/500 = USD 500\.00/);
+      expect(text).toMatch(/50000 = COP 50,000/);
+    });
+
+    it("says plainly that this is not the unit of daily_budget", () => {
+      expect(spendCap().descriptions[0]).toMatch(/NOT the minor unit used for daily_budget/);
+    });
+
+    it("never carries the minor-unit note or the word cents", () => {
+      for (const text of spendCap().descriptions) {
+        expect(text).not.toContain(MINOR_UNIT_NOTE);
+        expect(text).not.toMatch(/minor unit as Meta defines it|hundredths/);
+        expect(saysCents(text)).toBe(false);
+      }
+    });
+
+    it("warns that setting a cap restarts the amount-spent counter, and says how to remove one", () => {
+      expect(spendCap().descriptions[0]).toMatch(/restarts the account's amount-spent counter/);
+      expect(spendCap().descriptions.join(" ")).toMatch(/0 removes the cap/);
+    });
   });
 });

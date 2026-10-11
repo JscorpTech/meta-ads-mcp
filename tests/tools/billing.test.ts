@@ -94,62 +94,144 @@ describe("registerBillingTools", () => {
   });
 
   describe("ads_update_spend_cap handler", () => {
-    it("updates spend cap and returns confirmation", async () => {
+    type TextResult = { content: Array<{ type: string; text: string }> };
+    const refusedRead = { error: { code: 100, type: "OAuthException", message: "Unsupported get request." } };
+
+    /** POSTs succeed; the GET that follows answers with `readBack`, or is refused when there is none. */
+    const setCap = async (spend_cap: number, readBack?: Record<string, unknown>) => {
       const server = createMockMcpServer();
       registerBillingTools(server as never);
+      vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+        if (init?.method === "POST") return mockFetchResponse({ success: true });
+        return readBack ? mockFetchResponse({ id: "act_123", ...readBack }) : mockFetchResponse(refusedRead, { status: 400 });
+      }));
+      const result = await server._registeredTools[2].handler({ account_id: "123", spend_cap }) as TextResult;
+      return result.content[0].text;
+    };
 
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ success: true })));
+    const calls = () => vi.mocked(fetch).mock.calls.map(([url, init]) => ({
+      method: init?.method ?? "GET",
+      path: new URL(String(url)).pathname.replace(/^\/v[\d.]+/, ""),
+      fields: new URL(String(url)).searchParams.get("fields"),
+      body: init?.body ? Object.fromEntries(new URLSearchParams(init.body as string)) : undefined,
+    }));
 
-      const handler = server._registeredTools[2].handler;
-      const result = await handler({ account_id: "123", spend_cap: 100000 }) as {
-        content: Array<{ type: string; text: string }>;
-      };
+    it("sends a positive value exactly as the caller passed it", async () => {
+      await setCap(1000000, { spend_cap: "100000000", amount_spent: "0", currency: "USD" });
 
-      expect(result.content[0].text).toContain("Spend cap updated");
+      expect(calls()[0]).toEqual({ method: "POST", path: "/act_123", fields: null, body: { spend_cap: "1000000" } });
     });
 
-    it("echoes the value as sent, without a currency or a conversion it cannot vouch for", async () => {
-      const server = createMockMcpServer();
-      registerBillingTools(server as never);
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ success: true })));
+    it("sends a value with decimals as it is", async () => {
+      await setCap(23.5, { spend_cap: "2350", amount_spent: "0", currency: "USD" });
 
-      const result = await server._registeredTools[2].handler({ account_id: "123", spend_cap: 100000 }) as {
-        content: Array<{ type: string; text: string }>;
-      };
-
-      expect(result.content[0].text).toBe(
-        "Spend cap updated for account 123.\nNew spend cap: 100000 (the value as sent to Meta; read it back with ads_get_spend_limit)",
-      );
-      expect(result.content[0].text).not.toContain("USD");
-      expect(result.content[0].text).not.toContain("1000.00");
+      expect(calls()[0].body).toEqual({ spend_cap: "23.5" });
     });
 
-    it("sends the value exactly as before and makes no other request", async () => {
+    it("removes the cap with spend_cap_action=delete: Meta ignores spend_cap=0", async () => {
+      await setCap(0, { spend_cap: "0", amount_spent: "439924", currency: "USD" });
+
+      expect(calls()[0]).toEqual({ method: "POST", path: "/act_123", fields: null, body: { spend_cap_action: "delete" } });
+    });
+
+    it("writes once, then reads the cap, the amount spent and the currency back", async () => {
+      await setCap(1000000, { spend_cap: "100000000", amount_spent: "0", currency: "USD" });
+
+      expect(calls().map((call) => `${call.method} ${call.path}`)).toEqual(["POST /act_123", "GET /act_123"]);
+      expect(calls()[1].fields).toBe("spend_cap,amount_spent,currency");
+    });
+
+    it("USD: reports what Meta holds after the write, which is 100 times the number sent", async () => {
+      const text = await setCap(1000000, { spend_cap: "100000000", amount_spent: "0", currency: "USD" });
+
+      expect(text).toBe([
+        "Spend cap updated for account 123.",
+        "Sent: spend_cap=1000000 (in the account currency's standard unit)",
+        "Spend cap now: USD 1,000,000.00 (read back from Meta)",
+        "Amount spent now: USD 0.00 (read back from Meta)",
+      ].join("\n"));
+    });
+
+    it("COP: reports what Meta holds after the write, in whole pesos", async () => {
+      const text = await setCap(50000, { spend_cap: "50000", amount_spent: "0", currency: "COP" });
+
+      expect(text).toBe([
+        "Spend cap updated for account 123.",
+        "Sent: spend_cap=50000 (in the account currency's standard unit)",
+        "Spend cap now: COP 50,000 (read back from Meta)",
+        "Amount spent now: COP 0 (read back from Meta)",
+      ].join("\n"));
+    });
+
+    it("after a removal, reports that Meta holds no cap", async () => {
+      const text = await setCap(0, { spend_cap: "0", amount_spent: "439924", currency: "USD" });
+
+      expect(text).toBe([
+        "Spend cap updated for account 123.",
+        "Sent: spend_cap_action=delete",
+        "Spend cap now: none (read back from Meta)",
+        "Amount spent now: USD 4,399.24 (read back from Meta)",
+      ].join("\n"));
+    });
+
+    it("after a removal, a cap Meta still holds is reported, not hidden behind 'removed'", async () => {
+      const text = await setCap(0, { spend_cap: "100000000", amount_spent: "0", currency: "USD" });
+
+      expect(text).toContain("Spend cap now: USD 1,000,000.00 (read back from Meta)");
+      expect(text).not.toMatch(/removed|No limit/i);
+    });
+
+    it("treats a read-back without a spend_cap field as no cap", async () => {
+      const text = await setCap(0, { amount_spent: "439924", currency: "USD" });
+
+      expect(text).toContain("Spend cap now: none (read back from Meta)");
+    });
+
+    it("when the read-back fails, says the write succeeded and that the value is unconfirmed", async () => {
+      const text = await setCap(1000000);
+
+      expect(text).toBe([
+        "Spend cap updated for account 123.",
+        "Sent: spend_cap=1000000 (in the account currency's standard unit)",
+        "The write succeeded, but what Meta now holds could not be confirmed: the read-back failed. Check with ads_get_spend_limit.",
+      ].join("\n"));
+    });
+
+    it("does not read anything back when the write fails", async () => {
       const server = createMockMcpServer();
       registerBillingTools(server as never);
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ success: true })));
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse(refusedRead, { status: 400 })));
 
-      await server._registeredTools[2].handler({ account_id: "123", spend_cap: 100000 });
-
+      await expect(server._registeredTools[2].handler({ account_id: "123", spend_cap: 500 })).rejects.toThrow();
       expect(fetch).toHaveBeenCalledTimes(1);
-      const [url, init] = vi.mocked(fetch).mock.calls[0];
-      expect(new URL(String(url)).pathname).toMatch(/\/act_123$/);
-      expect(init?.method).toBe("POST");
-      expect(new URLSearchParams(init?.body as string).get("spend_cap")).toBe("100000");
     });
+  });
 
-    it("handles removing spend cap (setting to 0)", async () => {
+  describe("ads_get_spend_limit request", () => {
+    it("asks only for fields Meta's AdAccount reference lists", async () => {
       const server = createMockMcpServer();
       registerBillingTools(server as never);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ id: "act_123", currency: "USD" })));
 
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ success: true })));
+      await server._registeredTools[1].handler({ account_id: "123" });
 
-      const handler = server._registeredTools[2].handler;
-      const result = await handler({ account_id: "123", spend_cap: 0 }) as {
+      const fields = new URL(String(vi.mocked(fetch).mock.calls[0][0])).searchParams.get("fields");
+      expect(fields).toBe("id,name,currency,spend_cap,amount_spent,balance,min_daily_budget");
+      expect(fields).not.toContain("daily_spend_limit");
+    });
+
+    it("no longer prints a daily spend limit", async () => {
+      const server = createMockMcpServer();
+      registerBillingTools(server as never);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+        mockFetchResponse({ id: "act_123", currency: "USD", spend_cap: "100000", amount_spent: "75000", daily_spend_limit: "5000" }),
+      ));
+
+      const result = await server._registeredTools[1].handler({ account_id: "123" }) as {
         content: Array<{ type: string; text: string }>;
       };
 
-      expect(result.content[0].text).toContain("No limit (removed)");
+      expect(result.content[0].text).not.toContain("Daily Spend Limit");
     });
   });
 
