@@ -181,10 +181,25 @@ describe("registerBillingTools", () => {
       expect(text).not.toMatch(/removed|No limit/i);
     });
 
-    it("treats a read-back without a spend_cap field as no cap", async () => {
+    // "none" is a claim about what Meta holds, so only an explicit zero earns
+    // it. A read-back that leaves the field out, or sends null, confirms
+    // nothing: after setting 500 it would otherwise say there is no cap.
+    it("does not read a missing spend_cap field as 'no cap', after a removal", async () => {
       const text = await setCap(0, { amount_spent: "439924", currency: "USD" });
 
-      expect(text).toContain("Spend cap now: none (read back from Meta)");
+      expect(text).not.toContain("Spend cap now: none");
+      expect(text).toContain("Spend cap now: not confirmed (Meta's read-back did not include it). Check with ads_get_spend_limit.");
+      expect(text).toContain("Amount spent now: USD 4,399.24 (read back from Meta)");
+    });
+
+    it("does not read a missing or null spend_cap field as 'no cap', after setting one", async () => {
+      const missing = await setCap(500, { amount_spent: "0", currency: "USD" });
+      expect(missing).not.toContain("Spend cap now: none");
+      expect(missing).toContain("Spend cap now: not confirmed");
+
+      const nulled = await setCap(500, { spend_cap: null as unknown as string, amount_spent: "0", currency: "USD" });
+      expect(nulled).not.toContain("Spend cap now: none");
+      expect(nulled).toContain("Spend cap now: not confirmed");
     });
 
     it("when the read-back fails, says the write succeeded and that the value is unconfirmed", async () => {

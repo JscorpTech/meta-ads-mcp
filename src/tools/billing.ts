@@ -267,8 +267,16 @@ export function registerBillingTools(server: McpServer): void {
           `/${id}`,
           { fields: SPEND_CAP_READ_BACK_FIELDS },
         );
-        const hasCap = held.spend_cap !== undefined && held.spend_cap !== null && Number(held.spend_cap) !== 0;
-        lines.push(`Spend cap now: ${hasCap ? formatMinorAmount(held.spend_cap, held.currency) : "none"} (read back from Meta)`);
+        // "none" is a claim about what Meta holds: only an explicit zero
+        // earns it. A read-back that leaves the field out confirms nothing.
+        const cap = held.spend_cap;
+        if (cap === undefined || cap === null) {
+          lines.push("Spend cap now: not confirmed (Meta's read-back did not include it). Check with ads_get_spend_limit.");
+        } else if (Number(cap) === 0) {
+          lines.push("Spend cap now: none (read back from Meta)");
+        } else {
+          lines.push(`Spend cap now: ${formatMinorAmount(cap, held.currency)} (read back from Meta)`);
+        }
         if (held.amount_spent !== undefined) {
           lines.push(`Amount spent now: ${formatMinorAmount(held.amount_spent, held.currency)} (read back from Meta)`);
         }
