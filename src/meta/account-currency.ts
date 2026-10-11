@@ -1,19 +1,24 @@
 import { getAccessTokenHash } from "../auth/token-store.js";
-import { withDeadline } from "../utils/with-deadline.js";
 import { metaApiClient } from "./client.js";
 import { amountLine } from "./currency.js";
 
 // The lookup only decorates the result of a write that already happened, so
-// it must not hold that result back: a client that times out waiting would
-// repeat the write.
+// it must not hold that result back (a client that times out waiting would
+// repeat the write) and must not weigh on the writes that follow: it uses
+// the client's detached GET, is cancelled at the deadline, and is refused
+// outright when too many are already waiting.
 const LOOKUP_DEADLINE_MS = 2000;
+const MAX_CONCURRENT_LOOKUPS = 8;
 const MAX_ENTRIES = 2000;
 
 // An account's currency and an object's account never change, so entries do
 // not expire. Keys carry the token hash: one tenant's read never answers
 // another's.
 const remembered = new Map<string, string>();
-const inFlight = new Map<string, Promise<string | undefined>>();
+let lookupsInProgress = 0;
+
+type Owner = { accountId: string } | { entityId: string };
+type Read = (key: string, path: string, field: string, accept: RegExp) => Promise<string | undefined>;
 
 function remember(key: string, value: string): void {
   if (!remembered.has(key) && remembered.size >= MAX_ENTRIES) {
@@ -23,66 +28,78 @@ function remember(key: string, value: string): void {
   remembered.set(key, value);
 }
 
-async function readOnce(
-  key: string,
-  path: string,
-  field: string,
-  accept: RegExp,
-): Promise<string | undefined> {
-  const known = remembered.get(key);
-  if (known !== undefined) return known;
+const fromMemory: Read = async (key) => remembered.get(key);
 
-  let pending = inFlight.get(key);
-  if (!pending) {
-    pending = metaApiClient
-      .get<Record<string, unknown>>(path, { fields: field })
-      .then((response) => {
-        const value = response?.[field];
-        if (typeof value !== "string" || !accept.test(value)) return undefined;
-        remember(key, value);
-        return value;
-      })
-      .catch(() => undefined)
-      .finally(() => inFlight.delete(key));
-    inFlight.set(key, pending);
-  }
-  return pending;
+function fromMeta(signal: AbortSignal): Read {
+  return async (key, path, field, accept) => {
+    const known = remembered.get(key);
+    if (known !== undefined) return known;
+    const response = await metaApiClient.getDetached<Record<string, unknown>>(path, { fields: field }, signal);
+    const value = response?.[field];
+    if (signal.aborted || typeof value !== "string" || !accept.test(value)) return undefined;
+    remember(key, value);
+    return value;
+  };
 }
 
-async function readAccountCurrency(tokenHash: string, accountId: string): Promise<string | undefined> {
-  const match = /^(?:act_)?(\d{1,30})$/.exec(accountId);
+async function resolveCurrency(tokenHash: string, owner: Owner, read: Read): Promise<string | undefined> {
+  let accountId: string | undefined;
+  if ("entityId" in owner) {
+    if (!/^\d{1,30}$/.test(owner.entityId)) return undefined;
+    accountId = await read(`${tokenHash}:account:${owner.entityId}`, `/${owner.entityId}`, "account_id", /^\d{1,30}$/);
+  } else {
+    accountId = owner.accountId;
+  }
+  const match = /^(?:act_)?(\d{1,30})$/.exec(accountId ?? "");
   if (!match) return undefined;
   const account = `act_${match[1]}`;
-  const currency = await readOnce(`${tokenHash}:currency:${account}`, `/${account}`, "currency", /^[A-Za-z]{3}$/);
+  const currency = await read(`${tokenHash}:currency:${account}`, `/${account}`, "currency", /^[A-Za-z]{3}$/);
   return currency?.toUpperCase();
 }
 
-async function bounded(lookup: (tokenHash: string) => Promise<string | undefined>): Promise<string | undefined> {
+async function lookup(owner: Owner): Promise<string | undefined> {
+  let tokenHash: string;
   try {
-    const result = await withDeadline(lookup(getAccessTokenHash()), LOOKUP_DEADLINE_MS);
-    return result.settled ? result.value : undefined;
+    tokenHash = getAccessTokenHash();
   } catch {
     return undefined;
+  }
+
+  const known = await resolveCurrency(tokenHash, owner, fromMemory);
+  if (known !== undefined) return known;
+  if (lookupsInProgress >= MAX_CONCURRENT_LOOKUPS) return undefined;
+
+  lookupsInProgress += 1;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LOOKUP_DEADLINE_MS);
+  timer.unref?.();
+  const cancelled = new Promise<undefined>((resolve) => {
+    controller.signal.addEventListener("abort", () => resolve(undefined), { once: true });
+  });
+  try {
+    const answer = resolveCurrency(tokenHash, owner, fromMeta(controller.signal)).catch(() => undefined);
+    return await Promise.race([answer, cancelled]);
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+    lookupsInProgress -= 1;
   }
 }
 
 /**
  * The currency of an ad account, read once per token and account and then
- * answered from memory. Resolves to undefined, and never rejects, when Meta
- * does not answer within two seconds or the read fails: callers use it to
+ * answered from memory. Resolves to undefined, and never rejects, when the
+ * read fails, when Meta does not answer within two seconds (the request is
+ * cancelled) or when eight lookups are already waiting: callers use it to
  * word a result, not to decide anything.
  */
 export function accountCurrency(accountId: string): Promise<string | undefined> {
-  return bounded((tokenHash) => readAccountCurrency(tokenHash, accountId));
+  return lookup({ accountId });
 }
 
 /** Same, starting from a campaign, ad set or ad id: its account is read first. */
 export function entityAccountCurrency(entityId: string): Promise<string | undefined> {
-  return bounded(async (tokenHash) => {
-    if (!/^\d{1,30}$/.test(entityId)) return undefined;
-    const accountId = await readOnce(`${tokenHash}:account:${entityId}`, `/${entityId}`, "account_id", /^\d{1,30}$/);
-    return accountId === undefined ? undefined : readAccountCurrency(tokenHash, accountId);
-  });
+  return lookup({ entityId });
 }
 
 const AMOUNT_LABELS = {
@@ -92,30 +109,28 @@ const AMOUNT_LABELS = {
 } as const;
 
 /**
- * Lines for the result of a write, one per amount it carried, each starting
- * with a line break: "\nDaily budget: COP 50,000 (account currency COP)".
- * Empty, and without any request, when the write carried no amount. A value
- * that is neither a number nor a string of digits is left out.
+ * Lines for the result of a write, one per amount in the body that was sent,
+ * each starting with a line break:
+ * "\nDaily budget: COP 50,000 (account currency COP)". Pass the form body
+ * itself, never the tool's arguments: an argument the handler dropped must
+ * not be confirmed. Empty, and without any request, when the body carried no
+ * amount. A value that is neither a number nor a string of digits is left
+ * out.
  */
-export async function statedAmounts(
-  amounts: Partial<Record<keyof typeof AMOUNT_LABELS, unknown>>,
-  owner: { accountId: string } | { entityId: string },
-): Promise<string> {
+export async function statedAmounts(sentBody: Record<string, unknown>, owner: Owner): Promise<string> {
   const given: Array<[string, number]> = [];
   for (const [field, label] of Object.entries(AMOUNT_LABELS)) {
-    const raw = amounts[field as keyof typeof AMOUNT_LABELS];
+    const raw = sentBody[field];
     const amount = typeof raw === "string" && /^\d{1,15}$/.test(raw) ? Number(raw) : raw;
     if (typeof amount === "number" && Number.isFinite(amount)) given.push([label, amount]);
   }
   if (given.length === 0) return "";
 
-  const currency = "accountId" in owner
-    ? await accountCurrency(owner.accountId)
-    : await entityAccountCurrency(owner.entityId);
+  const currency = await lookup(owner);
   return given.map(([label, amount]) => `\n${amountLine(label, amount, currency)}`).join("");
 }
 
 export function resetAccountCurrencyCacheForTests(): void {
   remembered.clear();
-  inFlight.clear();
+  lookupsInProgress = 0;
 }

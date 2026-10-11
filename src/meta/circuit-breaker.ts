@@ -68,6 +68,15 @@ export class CircuitBreaker {
     }
   }
 
+  /** Whether a request in this context would be refused now. Reads only. */
+  isOpen(context: CircuitContext): boolean {
+    const now = Date.now();
+    for (const circuit of this.relevantCircuits(context)) {
+      if (circuit.openUntil > now) return true;
+    }
+    return false;
+  }
+
   /**
    * Record a throttle outcome and decide whether to open the circuit.
    */

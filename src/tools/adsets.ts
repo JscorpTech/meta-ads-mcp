@@ -799,10 +799,17 @@ export function registerAdSetTools(server: McpServer): void {
         });
       }
 
-      // Only an amount the caller typed is restated: a budget copied from the
-      // source ad set is already in this account's unit.
+      // Restated from the body that was sent, and only where the caller's
+      // own value is what went into it: a budget or bid copied from the source
+      // ad set is already in this account's unit, and a caller's daily budget
+      // is dropped when a lifetime budget comes with it.
+      const callerLifetime = target_ad_set.lifetime_budget !== undefined;
+      const callerDaily = !callerLifetime && target_ad_set.daily_budget !== undefined;
       const amountLines = await statedAmounts(
-        { daily_budget: target_ad_set.daily_budget, lifetime_budget: target_ad_set.lifetime_budget },
+        {
+          ...(callerLifetime ? { lifetime_budget: createAdSetBody.lifetime_budget } : {}),
+          ...(callerDaily ? { daily_budget: createAdSetBody.daily_budget } : {}),
+        },
         { accountId: accountPath },
       );
 
@@ -869,7 +876,7 @@ export function registerAdSetTools(server: McpServer): void {
       if (promoted_object) body.promoted_object = JSON.stringify(promoted_object);
 
       const result = await metaApiClient.postForm<{ id: string }>(`/${accountPath}/adsets`, body);
-      const amountLines = await statedAmounts({ daily_budget, lifetime_budget, bid_amount }, { accountId: accountPath });
+      const amountLines = await statedAmounts(body, { accountId: accountPath });
 
       return {
         content: [
@@ -915,7 +922,7 @@ export function registerAdSetTools(server: McpServer): void {
       if (end_time !== undefined) body.end_time = end_time;
 
       await metaApiClient.postForm<{ success: boolean }>(`/${id}`, body);
-      const amountLines = await statedAmounts({ daily_budget, lifetime_budget, bid_amount }, { entityId: id });
+      const amountLines = await statedAmounts(body, { entityId: id });
 
       return {
         content: [

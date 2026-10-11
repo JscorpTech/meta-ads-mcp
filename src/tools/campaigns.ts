@@ -208,7 +208,7 @@ export function registerCampaignTools(server: McpServer): void {
       const budgetSharingLine = body.is_adset_budget_sharing_enabled === undefined
         ? ""
         : `\nAd set budget sharing: ${body.is_adset_budget_sharing_enabled ? "on" : "off"}`;
-      const amountLines = await statedAmounts({ daily_budget, lifetime_budget }, { accountId: id });
+      const amountLines = await statedAmounts(body, { accountId: id });
 
       return {
         content: [
@@ -256,7 +256,7 @@ export function registerCampaignTools(server: McpServer): void {
         `/${id}`,
         body,
       );
-      const amountLines = await statedAmounts({ daily_budget, lifetime_budget }, { entityId: id });
+      const amountLines = await statedAmounts(body, { entityId: id });
 
       return {
         content: [

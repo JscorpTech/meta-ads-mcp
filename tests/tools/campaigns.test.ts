@@ -365,6 +365,66 @@ describe("registerCampaignTools", () => {
       expect(fetchCallSummary().filter((call) => call.startsWith("GET"))).toEqual(["GET /act_123"]);
     });
 
+    // The audit's scenario: on the shared client, three lookups answered with
+    // 80004 opened the account's circuit for 900 s and the fourth write was
+    // refused before it was sent.
+    it("create: lookups that Meta throttles do not stop the writes that follow", async () => {
+      vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) =>
+        init?.method === "POST"
+          ? mockFetchResponse({ id: "1000300" })
+          : mockFetchResponse({ error: { code: 80004, type: "OAuthException", message: "Too many calls to this ad-account." } }, { status: 400 })));
+
+      for (let i = 0; i < 3; i++) await create({ daily_budget: 50000 });
+      const text = await create({ daily_budget: 50000 });
+
+      expect(fetchCallSummary().filter((call) => call === "POST /act_123/campaigns")).toHaveLength(4);
+      expect(text).toContain("Campaign created successfully!");
+      expect(metaApiClient.getUsageSnapshot().circuits).toEqual([]);
+    });
+
+    // The audit's scenario: a usage header on the lookup's answer made the
+    // rate limiter hold the next write for 120 s.
+    it("create: a usage header on the lookup's answer does not delay the write that follows", async () => {
+      vi.useFakeTimers();
+      try {
+        const postedAt: number[] = [];
+        vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+          if (init?.method === "POST") {
+            postedAt.push(Date.now());
+            return mockFetchResponse({ id: "1000301" });
+          }
+          return mockFetchResponse({ currency: "COP" }, {
+            headers: { "x-ad-account-usage": JSON.stringify({ acc_id_util_pct: 99, reset_time_duration: 120 }) },
+          });
+        }));
+        const started = Date.now();
+
+        const first = create({ daily_budget: 50000 });
+        await vi.advanceTimersByTimeAsync(0);
+        expect((await first).split("\n")).toContain("Daily budget: COP 50,000 (account currency COP)");
+        const second = create({ daily_budget: 60000 });
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(postedAt).toEqual([started, started]);
+        expect((await second).split("\n")).toContain("Daily budget: COP 60,000 (account currency COP)");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("update: lookups that Meta throttles do not stop the writes that follow", async () => {
+      vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) =>
+        init?.method === "POST"
+          ? mockFetchResponse({ success: true })
+          : mockFetchResponse({ error: { code: 80004, type: "OAuthException", message: "Too many calls to this ad-account." } }, { status: 400 })));
+
+      for (let i = 0; i < 3; i++) await update({ daily_budget: 75000 });
+      await update({ daily_budget: 75000 });
+
+      expect(fetchCallSummary().filter((call) => call === "POST /100123")).toHaveLength(4);
+      expect(metaApiClient.getUsageSnapshot().circuits).toEqual([]);
+    });
+
     it("update: finds the campaign's account and states the new budget in its currency", async () => {
       stubWriteAndCurrencyLookup({
         write: { success: true },

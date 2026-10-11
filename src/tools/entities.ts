@@ -125,7 +125,7 @@ export function registerEntityTools(server: McpServer): void {
       const body = encodeUpdatesBody(updates);
 
       await metaApiClient.postForm<{ success: boolean }>(`/${id}`, body);
-      const amountLines = await statedAmounts(updates, { entityId: id });
+      const amountLines = await statedAmounts(body, { entityId: id });
 
       return {
         content: [

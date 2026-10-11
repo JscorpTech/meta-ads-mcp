@@ -26,16 +26,23 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   again without naming the currencies that have none. What is sent to Meta
   does not change.
 - **Creating or updating a campaign or an ad set states the amount in the
-  account's currency.** The result gains one line per amount passed, such as
+  account's currency.** The result gains one line per amount sent, such as
   `Daily budget: COP 50,000 (account currency COP)` or
   `Daily budget: USD 50.00 (account currency USD)`, so a wrong unit shows in
-  the answer to the call that set it. The currency is read after the write
+  the answer to the call that set it. The lines are built from the body
+  that went to Meta, not from the tool's arguments, so an argument the
+  handler dropped is never confirmed. The currency is read after the write
   succeeds, with one `GET` per token and account that is then answered from
-  memory; an update reads the object's account first. The read never fails
-  the call and never holds its result for more than two seconds: without a
-  currency the line gives the raw amount and says it is in the account
-  currency's minor unit. `ads_clone_ad_set_bundle` restates only a budget
-  passed in `target_ad_set`, not one copied from the source.
+  memory; an update reads the object's account first. That read only words
+  the result, so it is kept apart from everything the client shares between
+  requests: nothing it receives reaches the rate limiter, the write pacer
+  or the circuit breaker, it is never retried, it is cancelled (body
+  included) at two seconds, and at most eight run at once. It makes no
+  request while the account's circuit is open or the rate limiter would
+  wait. Without a currency the line gives the raw amount and says it is in
+  the account currency's minor unit. `ads_clone_ad_set_bundle` restates
+  only a budget passed in `target_ad_set` that was actually sent, not one
+  copied from the source.
   The description of `ads_update_spend_cap` and the value it sends are
   unchanged: Meta documents that write in whole currency units, not minor
   units, which needs a check against a live account first.
