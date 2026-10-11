@@ -2,11 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { metaApiClient } from "../../src/meta/client.js";
 import { registerAdSetTools } from "../../src/tools/adsets.js";
 import { resetCloneBundleStoreForTests } from "../../src/store/clone-bundle-store.js";
+import { resetAccountCurrencyCacheForTests } from "../../src/meta/account-currency.js";
 import {
   cleanupTestToken,
   createMockMcpServer,
+  fetchCallSummary,
   mockFetchResponse,
   setupTestToken,
+  stubWriteAndCurrencyLookup,
 } from "../setup.js";
 
 describe("registerAdSetTools", () => {
@@ -14,6 +17,7 @@ describe("registerAdSetTools", () => {
     setupTestToken();
     metaApiClient.resetForTests();
     resetCloneBundleStoreForTests();
+    resetAccountCurrencyCacheForTests();
   });
 
   afterEach(() => {
@@ -686,7 +690,8 @@ describe("registerAdSetTools", () => {
         .mockResolvedValueOnce(mockFetchResponse(oneAd()))
         .mockResolvedValueOnce(mockFetchResponse({ id: "20001" }))
         .mockResolvedValueOnce(mockFetchResponse({ copied_ad_id: "30001" }))
-        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+        .mockResolvedValueOnce(mockFetchResponse({ success: true }))
+        .mockResolvedValueOnce(mockFetchResponse({ currency: "COP" })));
 
       const handler = server._registeredTools[2].handler;
       await handler({
@@ -702,6 +707,122 @@ describe("registerAdSetTools", () => {
       expect(params.get("daily_budget")).toBe("500");
       expect(params.get("lifetime_budget")).toBeNull();
       expect(params.get("end_time")).toBeNull();
+    });
+
+    it("states a budget override in the account currency, and reads the currency only after every write", async () => {
+      const server = createMockMcpServer();
+      registerAdSetTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(sourceAdSet()))
+        .mockResolvedValueOnce(mockFetchResponse(oneAd()))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "20001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ copied_ad_id: "30001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true }))
+        .mockResolvedValueOnce(mockFetchResponse({ currency: "COP" })));
+
+      const result = await server._registeredTools[2].handler({
+        account_id: "act_123",
+        source_ad_set_id: "2099",
+        target_ad_set: { name: "Target", geo_override: { countries: ["CO"] }, status: "PAUSED", daily_budget: 60000 },
+        creative_overrides: [],
+        dry_run: false,
+        idempotency_key: "k-budget-line",
+      }) as { content: Array<{ type: string; text: string }> };
+
+      expect(result.content[0].text).toContain("Bundle cloned!");
+      expect(result.content[0].text.split("\n")).toContain("Daily budget: COP 60,000 (account currency COP)");
+      expect(fetchCallSummary().at(-1)).toBe("GET /act_123");
+      expect(fetchCallSummary().filter((call) => call.startsWith("POST"))).toHaveLength(3);
+    });
+
+    // The audit's input: the schema accepts both budgets, the POST carries
+    // only the lifetime one, and the result confirmed a daily budget too.
+    it("states only the budget that was sent when the caller passes a daily and a lifetime budget", async () => {
+      const server = createMockMcpServer();
+      registerAdSetTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(sourceAdSet()))
+        .mockResolvedValueOnce(mockFetchResponse(oneAd()))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "20001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ copied_ad_id: "30001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true }))
+        .mockResolvedValueOnce(mockFetchResponse({ currency: "COP" })));
+
+      const result = await server._registeredTools[2].handler({
+        account_id: "act_123",
+        source_ad_set_id: "2099",
+        target_ad_set: {
+          name: "Target",
+          geo_override: { countries: ["CO"] },
+          status: "PAUSED",
+          daily_budget: 50000,
+          lifetime_budget: 900000,
+          end_time: "2026-12-01T00:00:00Z",
+        },
+        creative_overrides: [],
+        dry_run: false,
+        idempotency_key: "k-both-budgets",
+      }) as { content: Array<{ type: string; text: string }> };
+
+      const sent = new URLSearchParams(vi.mocked(fetch).mock.calls[2][1]?.body as string);
+      expect(sent.get("lifetime_budget")).toBe("900000");
+      expect(sent.has("daily_budget")).toBe(false);
+      const lines = result.content[0].text.split("\n");
+      expect(lines).toContain("Lifetime budget: COP 900,000 (account currency COP)");
+      expect(lines.filter((line) => line.startsWith("Daily budget"))).toEqual([]);
+    });
+
+    it("does not restate a bid or a budget the clone inherited, even next to one the caller passed", async () => {
+      const server = createMockMcpServer();
+      registerAdSetTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(sourceAdSet({ bid_amount: 700 })))
+        .mockResolvedValueOnce(mockFetchResponse(oneAd()))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "20001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ copied_ad_id: "30001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true }))
+        .mockResolvedValueOnce(mockFetchResponse({ currency: "COP" })));
+
+      const result = await server._registeredTools[2].handler({
+        account_id: "act_123",
+        source_ad_set_id: "2099",
+        target_ad_set: { name: "Target", geo_override: { countries: ["CO"] }, status: "PAUSED", daily_budget: 60000 },
+        creative_overrides: [],
+        dry_run: false,
+        idempotency_key: "k-inherited-bid",
+      }) as { content: Array<{ type: string; text: string }> };
+
+      const sent = new URLSearchParams(vi.mocked(fetch).mock.calls[2][1]?.body as string);
+      expect(sent.get("bid_amount")).toBe("700");
+      const amountLines = result.content[0].text.split("\n").filter((line) => /^(Daily budget|Lifetime budget|Bid amount):/.test(line));
+      expect(amountLines).toEqual(["Daily budget: COP 60,000 (account currency COP)"]);
+    });
+
+    it("does not read the currency when the budget is copied from the source ad set", async () => {
+      const server = createMockMcpServer();
+      registerAdSetTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(sourceAdSet()))
+        .mockResolvedValueOnce(mockFetchResponse(oneAd()))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "20001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ copied_ad_id: "30001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      const result = await server._registeredTools[2].handler({
+        account_id: "act_123",
+        source_ad_set_id: "2099",
+        target_ad_set: { name: "Target", geo_override: { countries: ["CO"] }, status: "PAUSED" },
+        creative_overrides: [],
+        dry_run: false,
+        idempotency_key: "k-budget-inherited",
+      }) as { content: Array<{ type: string; text: string }> };
+
+      expect(fetch).toHaveBeenCalledTimes(5);
+      expect(result.content[0].text).not.toContain("budget:");
     });
 
     it("reuses the cached result when called twice with the same idempotency key", async () => {
@@ -829,6 +950,131 @@ describe("registerAdSetTools", () => {
 
       expect(result.content[0].text).toContain("Ad set 2001 updated successfully");
       expect(result.content[0].text).toContain("daily_budget");
+    });
+  });
+
+  describe("budget and bid stated in the account currency", () => {
+    type TextResult = { content: Array<{ type: string; text: string }> };
+
+    const create = async (extra: Record<string, unknown>) => {
+      const server = createMockMcpServer();
+      registerAdSetTools(server as never);
+      const tool = server._registeredTools.find((t) => t.name === "ads_create_ad_set");
+      const result = await tool!.handler({
+        account_id: "act_123",
+        campaign_id: "1001",
+        name: "Budgeted ad set",
+        destination_type: "WEBSITE",
+        status: "PAUSED",
+        optimization_goal: "LINK_CLICKS",
+        billing_event: "IMPRESSIONS",
+        targeting: { geo_locations: { countries: ["CO"] } },
+        ...extra,
+      }) as TextResult;
+      return result.content[0].text;
+    };
+
+    const update = async (changes: Record<string, unknown>) => {
+      const server = createMockMcpServer();
+      registerAdSetTools(server as never);
+      const tool = server._registeredTools.find((t) => t.name === "ads_update_ad_set");
+      const result = await tool!.handler({ ad_set_id: "2001", ...changes }) as TextResult;
+      return result.content[0].text;
+    };
+
+    it("create: a COP account's daily budget is whole pesos", async () => {
+      stubWriteAndCurrencyLookup({ write: { id: "2100" }, account: { currency: "COP" } });
+
+      const text = await create({ daily_budget: 50000 });
+
+      expect(text).toContain("Ad set created successfully!");
+      expect(text.split("\n")).toContain("Daily budget: COP 50,000 (account currency COP)");
+    });
+
+    it("create: a USD account's daily budget is hundredths of a dollar", async () => {
+      stubWriteAndCurrencyLookup({ write: { id: "2101" }, account: { currency: "USD" } });
+
+      const text = await create({ daily_budget: 2000 });
+
+      expect(text.split("\n")).toContain("Daily budget: USD 20.00 (account currency USD)");
+    });
+
+    it("create: states the lifetime budget and the bid as well", async () => {
+      stubWriteAndCurrencyLookup({ write: { id: "2102" }, account: { currency: "COP" } });
+
+      const lines = (await create({
+        lifetime_budget: 3000000,
+        bid_amount: 1500,
+        end_time: "2026-12-31T23:59:59-0500",
+      })).split("\n");
+
+      expect(lines).toContain("Lifetime budget: COP 3,000,000 (account currency COP)");
+      expect(lines).toContain("Bid amount: COP 1,500 (account currency COP)");
+    });
+
+    it("create: still succeeds when the currency lookup throws, and says only what it knows", async () => {
+      stubWriteAndCurrencyLookup({ write: { id: "2103" } });
+
+      const text = await create({ daily_budget: 50000 });
+
+      expect(text).toContain("Ad set created successfully!");
+      expect(text).toContain("ID: 2103");
+      expect(text.split("\n")).toContain(
+        "Daily budget: 50000 in the account currency's minor unit (currency not confirmed; check ads_get_account_info)",
+      );
+    });
+
+    it("create: writes once, and reads the currency only after the write", async () => {
+      stubWriteAndCurrencyLookup({ write: { id: "2104" }, account: { currency: "COP" } });
+
+      await create({ daily_budget: 50000 });
+
+      expect(fetchCallSummary()).toEqual(["POST /act_123/adsets", "GET /act_123"]);
+      const params = new URLSearchParams(vi.mocked(fetch).mock.calls[0][1]?.body as string);
+      expect(params.get("daily_budget")).toBe("50000");
+    });
+
+    it("create: does not read the currency for an ad set without a budget or a bid", async () => {
+      stubWriteAndCurrencyLookup({ write: { id: "2105" }, account: { currency: "COP" } });
+
+      const text = await create({});
+
+      expect(fetchCallSummary()).toEqual(["POST /act_123/adsets"]);
+      expect(text).not.toContain("budget:");
+    });
+
+    it("update: finds the ad set's account and states the new budget in its currency", async () => {
+      stubWriteAndCurrencyLookup({
+        write: { success: true },
+        entity: { account_id: "123", id: "2001" },
+        account: { currency: "COP" },
+      });
+
+      const text = await update({ daily_budget: 75000, bid_amount: 900 });
+
+      expect(text).toContain("Ad set 2001 updated successfully.");
+      expect(text.split("\n")).toContain("Daily budget: COP 75,000 (account currency COP)");
+      expect(text.split("\n")).toContain("Bid amount: COP 900 (account currency COP)");
+      expect(fetchCallSummary()).toEqual(["POST /2001", "GET /2001", "GET /act_123"]);
+    });
+
+    it("update: still succeeds when the currency lookup throws", async () => {
+      stubWriteAndCurrencyLookup({ write: { success: true } });
+
+      const text = await update({ daily_budget: 75000 });
+
+      expect(text).toContain("Ad set 2001 updated successfully.");
+      expect(text.split("\n")).toContain(
+        "Daily budget: 75000 in the account currency's minor unit (currency not confirmed; check ads_get_account_info)",
+      );
+    });
+
+    it("update: does not read anything when neither a budget nor a bid changes", async () => {
+      stubWriteAndCurrencyLookup({ write: { success: true }, account: { currency: "COP" } });
+
+      await update({ status: "PAUSED" });
+
+      expect(fetchCallSummary()).toEqual(["POST /2001"]);
     });
   });
 });

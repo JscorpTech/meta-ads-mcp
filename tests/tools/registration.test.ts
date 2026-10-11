@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { z } from "zod";
 import { registerAllTools } from "../../src/tools/index.js";
+import { MINOR_UNIT_NOTE } from "../../src/meta/currency.js";
 import { createMockMcpServer } from "../setup.js";
 
 describe("registerAllTools", () => {
@@ -196,5 +198,119 @@ describe("registerAllTools", () => {
       (n) => n.includes("billing") || n.includes("spend") || n.includes("invoice"),
     );
     expect(billingTools.length).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe("money amounts in what a model reads on tools/list", () => {
+  const AMOUNT_PARAMETERS = ["daily_budget", "lifetime_budget", "bid_amount", "budget_value"];
+
+  interface Published {
+    name: string;
+    /** The tool description and every parameter description, nested ones included. */
+    descriptions: string[];
+    parameters: Set<string>;
+  }
+
+  const collect = (node: unknown, descriptions: string[], parameters: Set<string>): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) collect(item, descriptions, parameters);
+      return;
+    }
+    if (typeof node !== "object" || node === null) return;
+    const record = node as Record<string, unknown>;
+    if (typeof record.description === "string") descriptions.push(record.description);
+    if (typeof record.properties === "object" && record.properties !== null) {
+      for (const parameter of Object.keys(record.properties)) parameters.add(parameter);
+    }
+    for (const value of Object.values(record)) collect(value, descriptions, parameters);
+  };
+
+  const published = (): Published[] => {
+    const server = createMockMcpServer();
+    registerAllTools(server as never);
+    return server._registeredTools.map((tool) => {
+      const descriptions = [tool.description];
+      const parameters = new Set<string>();
+      const shape = tool.schema as Record<string, z.ZodType> | undefined;
+      if (shape) collect(z.toJSONSchema(z.object(shape), { io: "input", unrepresentable: "any" }), descriptions, parameters);
+      return { name: tool.name, descriptions, parameters };
+    });
+  };
+
+  const saysCents = (text: string): boolean => /\bcents?\b/i.test(text);
+  const namesWholeUnitCurrencies = (text: string): boolean => /whole units/i.test(text) && /\bCOP\b/.test(text);
+
+  it("reads the description of every parameter, nested ones included", () => {
+    const clone = published().find((tool) => tool.name === "ads_clone_ad_set_bundle");
+    expect(clone?.descriptions).toContain("Name for the cloned ad set");
+    expect(clone?.parameters.has("daily_budget")).toBe(true);
+  });
+
+  it("no description says 'cents' without itself naming the currencies that have none", () => {
+    const offenders = published()
+      .flatMap((tool) => tool.descriptions
+        .filter((text) => saysCents(text) && !namesWholeUnitCurrencies(text))
+        .map((text) => `${tool.name}: ${text}`));
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("every tool that takes a budget or a bid carries the minor-unit note", () => {
+    const taking = published().filter((tool) => AMOUNT_PARAMETERS.some((parameter) => tool.parameters.has(parameter)));
+
+    expect(taking.map((tool) => tool.name).sort()).toEqual([
+      "ads_clone_ad_set_bundle",
+      "ads_create_ad_set",
+      "ads_create_budget_schedule",
+      "ads_create_campaign",
+      "ads_update_ad_set",
+      "ads_update_campaign",
+    ]);
+    for (const tool of taking) {
+      const noted = tool.descriptions.filter((text) => text.includes(MINOR_UNIT_NOTE));
+      expect(noted, tool.name).toHaveLength(1);
+      expect(namesWholeUnitCurrencies(noted[0]), tool.name).toBe(true);
+    }
+  });
+
+  it("the generic updater states the unit too, since its amounts travel in a free-form object", () => {
+    const generic = published().find((tool) => tool.name === "ads_update_entity");
+    expect(generic?.descriptions.some((text) => text.includes(MINOR_UNIT_NOTE))).toBe(true);
+  });
+
+  // Verified against a live USD account: the cap is written in whole
+  // currency (1000000 sent, "100000000" read back), unlike budgets and bids.
+  describe("the account spend cap, which is not in the minor unit", () => {
+    const spendCap = () => published().find((tool) => tool.name === "ads_update_spend_cap")!;
+
+    it("is the only tool that takes a spend_cap", () => {
+      const taking = published().filter((tool) => tool.parameters.has("spend_cap")).map((tool) => tool.name);
+      expect(taking).toEqual(["ads_update_spend_cap"]);
+    });
+
+    it.each(["the tool description", "the parameter description"])("%s names the standard unit with an example of each kind", (which) => {
+      const [tool, ...parameters] = spendCap().descriptions;
+      const text = which === "the tool description" ? tool : parameters.find((description) => /spend cap/i.test(description)) ?? "";
+      expect(text).toMatch(/standard unit/);
+      expect(text).toMatch(/500 = USD 500\.00/);
+      expect(text).toMatch(/50000 = COP 50,000/);
+    });
+
+    it("says plainly that this is not the unit of daily_budget", () => {
+      expect(spendCap().descriptions[0]).toMatch(/NOT the minor unit used for daily_budget/);
+    });
+
+    it("never carries the minor-unit note or the word cents", () => {
+      for (const text of spendCap().descriptions) {
+        expect(text).not.toContain(MINOR_UNIT_NOTE);
+        expect(text).not.toMatch(/minor unit as Meta defines it|hundredths/);
+        expect(saysCents(text)).toBe(false);
+      }
+    });
+
+    it("warns that setting a cap restarts the amount-spent counter, and says how to remove one", () => {
+      expect(spendCap().descriptions[0]).toMatch(/restarts the account's amount-spent counter/);
+      expect(spendCap().descriptions.join(" ")).toMatch(/0 removes the cap/);
+    });
   });
 });

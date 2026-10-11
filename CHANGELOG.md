@@ -21,6 +21,83 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   the name is replaced, not stacked), at most 100 characters, counted by
   code points so a character is never split. Without `name` it stays
   `image<ext>`. The `name` field is still sent.
+- **Budgets and bids are no longer described as "cents" for every
+  currency.** The tool descriptions said `5000` is `$50.00` whatever the
+  account, which is true only where Meta's currency offset is 100. For the
+  eleven currencies Meta counts in whole units (COP, CLP, CRC, HUF, ISK, IDR,
+  JPY, KRW, PYG, TWD, VND) an agent that followed the description sent a
+  budget 100 times too large. The descriptions of `ads_create_campaign`,
+  `ads_update_campaign`, `ads_create_ad_set`, `ads_update_ad_set`,
+  `ads_clone_ad_set_bundle`, `ads_create_budget_schedule` and
+  `ads_update_entity` now say the amount is in the account currency's minor
+  unit as Meta defines it, with one example of each kind, and tell the model
+  to read the account currency first. This matches what the server's own
+  guide already said. The offsets come from
+  [Meta's currency table](https://developers.facebook.com/docs/marketing-api/currencies),
+  kept in `src/meta/currency.ts`; a test fails if a description says "cents"
+  again without naming the currencies that have none. What is sent to Meta
+  does not change.
+- **Creating or updating a campaign or an ad set states the amount in the
+  account's currency.** The result gains one line per amount sent, such as
+  `Daily budget: COP 50,000 (account currency COP)` or
+  `Daily budget: USD 50.00 (account currency USD)`, so a wrong unit shows in
+  the answer to the call that set it. The lines are built from the body
+  that went to Meta, not from the tool's arguments, so an argument the
+  handler dropped is never confirmed. The currency is read after the write
+  succeeds, with one `GET` per token and account that is then answered from
+  memory; an update reads the object's account first. That read only words
+  the result, so it is kept apart from everything the client shares between
+  requests: nothing it receives reaches the rate limiter, the write pacer
+  or the circuit breaker, it is never retried, it is cancelled (body
+  included) at two seconds, and at most eight run at once. It makes no
+  request while the account's circuit is open or the rate limiter would
+  wait. The token is fixed when the lookup starts: both of its requests and
+  the entry it remembers belong to that one, even if the process-wide active
+  token changes meanwhile (API-key and stdio mode). Without a currency the
+  line gives the raw amount and says it is in the account currency's minor
+  unit. `ads_clone_ad_set_bundle` restates only a budget passed in
+  `target_ad_set` that was actually sent, not one copied from the source.
+- **Amounts read from Meta are shown by Meta's offset, not divided by 100
+  or by ISO 4217 decimals.** `ads_get_billing_info` and `ads_get_spend_limit`
+  divided every amount by 100, so a COP account's 5,000,000 spent read
+  `50000.00 COP`; they now show `COP 5,000,000`, and `USD 500.00` for 50000
+  in a USD account. `ads_get_ad_dossier` took the decimals from `Intl`, which
+  follows ISO 4217: budgets in COP, CRC, HUF, IDR and TWD came out 100 times
+  too small and those in BHD and JOD divided by 1,000. All three use the
+  table in `src/meta/currency.ts`. Without a currency, or with one that is
+  not in the table, the raw number is shown with its unit named
+  (`50000 (in the account currency's minor unit)`); the billing tools no
+  longer assume USD. Insights figures (`spend`, `cpc`, `cpm`), which Meta
+  returns in whole currency, are not touched. `Min Daily Budget` in
+  `ads_get_spend_limit` still divides by 100: Meta's reference does not
+  state its unit.
+- **`ads_update_spend_cap` said the cap was in cents; it is in whole
+  currency.** Checked against a live USD account: `1000000` sent reads back
+  as `"100000000"`, a cap of USD 1,000,000, so an agent that followed the
+  description set a cap 100 times the one it meant, in every currency with
+  hundredths. The description and the parameter now say the cap is written
+  in the account currency's standard unit (`500` = USD 500.00, `50000` =
+  COP 50,000), that this is not the minor unit used for `daily_budget`, and
+  that setting a cap restarts the account's amount-spent counter. The value
+  sent is still exactly the one passed.
+- **`ads_update_spend_cap` with `0` now removes the cap.** It sent
+  `spend_cap=0`, which Meta ignores, and answered "No limit (removed)" while
+  the cap stayed. It sends `spend_cap_action=delete`, Meta's documented way.
+- **`ads_update_spend_cap` reports what Meta holds after the write.** Its
+  result divided the value by 100 and labelled it USD for every account. It
+  now reads `spend_cap`, `amount_spent` and `currency` back and prints them,
+  for example `Spend cap now: USD 1,000,000.00 (read back from Meta)`, or
+  `none` after a removal. If that read fails, the result says the write
+  succeeded and that the value could not be confirmed.
+- **`ads_get_spend_limit` works again.** It requested `daily_spend_limit`,
+  which is not a field of an ad account, and Meta rejected the whole call
+  with `(#100) Tried accessing nonexisting field`. The field and its line
+  are gone; every field it requests is in Meta's AdAccount reference.
+- **`ads_get_ad_accounts` no longer prints a status or a currency it was not
+  given.** With a custom `fields` list that left out `account_status` or
+  `currency`, every account read `Status: DISABLED` and
+  `Currency: undefined`. A field that was not requested is not printed, and
+  an account without `name` or `account_id` is listed by its `id`.
 - **ffmpeg's encoders are limited to one thread.** The wrapper passed
   `-threads 1` before `-i`, which bounds decoding, and `-filter_threads 1`,
   which bounds filtering; the encoders were unbounded, so libx264 sized its

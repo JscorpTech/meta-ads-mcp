@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { metaApiClient } from "../meta/client.js";
+import { statedAmounts } from "../meta/account-currency.js";
+import { MINOR_UNIT_NOTE } from "../meta/currency.js";
 import { normalizeAccountId, validateMetaId } from "../utils/format.js";
 import { buildFieldsParam } from "../utils/validation.js";
 import { CAMPAIGN_DEFAULT_FIELDS } from "../meta/types/campaign.js";
@@ -149,11 +151,11 @@ export function registerCampaignTools(server: McpServer): void {
         daily_budget: z
           .number()
           .optional()
-          .describe("Campaign daily budget in cents (e.g., 5000 = $50.00). Omit to set budgets on the ad sets instead."),
+          .describe(`Campaign daily budget ${MINOR_UNIT_NOTE}. Omit to set budgets on the ad sets instead.`),
         lifetime_budget: z
           .number()
           .optional()
-          .describe("Campaign lifetime budget in cents. Omit to set budgets on the ad sets instead."),
+          .describe("Campaign lifetime budget, in the same unit as daily_budget. Omit to set budgets on the ad sets instead."),
         is_adset_budget_sharing_enabled: z
           .boolean()
           .optional()
@@ -206,12 +208,13 @@ export function registerCampaignTools(server: McpServer): void {
       const budgetSharingLine = body.is_adset_budget_sharing_enabled === undefined
         ? ""
         : `\nAd set budget sharing: ${body.is_adset_budget_sharing_enabled ? "on" : "off"}`;
+      const amountLines = await statedAmounts(body, { accountId: id });
 
       return {
         content: [
           {
             type: "text",
-            text: `Campaign created successfully!\nID: ${result.id}\nName: ${name}\nObjective: ${objective}\nStatus: ${status}${budgetSharingLine}`,
+            text: `Campaign created successfully!\nID: ${result.id}\nName: ${name}\nObjective: ${objective}\nStatus: ${status}${budgetSharingLine}${amountLines}`,
           },
         ],
       };
@@ -227,8 +230,8 @@ export function registerCampaignTools(server: McpServer): void {
         campaign_id: z.string().describe("Campaign ID to update"),
         name: z.string().optional(),
         status: statusEnum.optional(),
-        daily_budget: z.number().optional().describe("Daily budget in cents"),
-        lifetime_budget: z.number().optional().describe("Lifetime budget in cents"),
+        daily_budget: z.number().optional().describe(`Daily budget ${MINOR_UNIT_NOTE}.`),
+        lifetime_budget: z.number().optional().describe("Lifetime budget, in the same unit as daily_budget."),
         is_adset_budget_sharing_enabled: z
           .boolean()
           .optional()
@@ -253,12 +256,13 @@ export function registerCampaignTools(server: McpServer): void {
         `/${id}`,
         body,
       );
+      const amountLines = await statedAmounts(body, { entityId: id });
 
       return {
         content: [
           {
             type: "text",
-            text: `Campaign ${id} updated successfully.\nChanges: ${JSON.stringify(body)}`,
+            text: `Campaign ${id} updated successfully.\nChanges: ${JSON.stringify(body)}${amountLines}`,
           },
         ],
       };

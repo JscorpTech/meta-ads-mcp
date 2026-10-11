@@ -57,10 +57,18 @@ export function registerAccountTools(server: McpServer): void {
       const text = accounts.length === 0
         ? "No ad accounts found for this user."
         : accounts
-            .map(
-              (a) =>
-                `• ${a.name} (${a.account_id}) — Status: ${a.account_status === 1 ? "ACTIVE" : "DISABLED"} — Currency: ${a.currency} — Spent: ${a.amount_spent ?? "N/A"}`,
-            )
+            .map((a) => {
+              // A caller's own `fields` may leave any of these out: a field
+              // that was not requested is not printed, least of all as a
+              // status of DISABLED.
+              const reference = a.account_id ?? a.id;
+              return [
+                `• ${a.name ? `${a.name} (${reference})` : reference}`,
+                ...(a.account_status !== undefined ? [`Status: ${a.account_status === 1 ? "ACTIVE" : "DISABLED"}`] : []),
+                ...(a.currency !== undefined ? [`Currency: ${a.currency}`] : []),
+                `Spent: ${a.amount_spent ?? "N/A"}`,
+              ].join(" — ");
+            })
             .join("\n");
 
       return {
