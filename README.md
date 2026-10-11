@@ -453,7 +453,7 @@ Any client that speaks the [Model Context Protocol](https://modelcontextprotocol
 
 ### Updating an ad set's budget
 
-Adjusting the budget of a live ad set is a high-frequency operation for agencies — daily caps need to scale up and down based on pacing, while keeping the rest of the targeting and creative untouched. Use `ads_update_ad_set` and only pass the fields you want to change; everything else stays as-is on Meta's side. Budget values are sent **in cents**, matching the Meta Marketing API convention (`2000` = `$20.00`). Authentication is transparent: whichever mode the deployment uses (Sign in with Meta OAuth, registered System User token, or `MCP_API_KEY` + `X-Meta-Token` headers), the active token is resolved per request and applied automatically.
+Adjusting the budget of a live ad set is a high-frequency operation for agencies — daily caps need to scale up and down based on pacing, while keeping the rest of the targeting and creative untouched. Use `ads_update_ad_set` and only pass the fields you want to change; everything else stays as-is on Meta's side. Budget values are sent in the account currency's **minor unit as Meta defines it**: hundredths for most currencies (`5000` = `$50.00` in a USD account) and whole units for COP, CLP, PYG, CRC, JPY and the others Meta lists with [offset 1](https://developers.facebook.com/docs/marketing-api/currencies) (`50000` = 50,000 pesos in a COP account). The result states the amount in the account's currency so a wrong unit is visible at once. Authentication is transparent: whichever mode the deployment uses (Sign in with Meta OAuth, registered System User token, or `MCP_API_KEY` + `X-Meta-Token` headers), the active token is resolved per request and applied automatically.
 
 The `tools/call` payload an MCP client sends:
 
@@ -477,6 +477,7 @@ Expected response (the handler returns one MCP `text` block):
 ```text
 Ad set 120200000000000000 updated successfully.
 Changes: {"daily_budget":"5000"}
+Daily budget: USD 50.00 (account currency USD)
 ```
 
 Notes:

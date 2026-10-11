@@ -1,6 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { registerCampaignTools } from "../../src/tools/campaigns.js";
-import { createMockMcpServer, setupTestToken, cleanupTestToken, mockFetchResponse } from "../setup.js";
+import { metaApiClient } from "../../src/meta/client.js";
+import { resetAccountCurrencyCacheForTests } from "../../src/meta/account-currency.js";
+import {
+  createMockMcpServer,
+  setupTestToken,
+  cleanupTestToken,
+  mockFetchResponse,
+  stubWriteAndCurrencyLookup,
+  fetchCallSummary,
+} from "../setup.js";
 
 describe("registerCampaignTools", () => {
   beforeEach(() => {
@@ -238,6 +247,155 @@ describe("registerCampaignTools", () => {
       // Verify status is set to DELETED in the form body
       const call = vi.mocked(fetch).mock.calls[0];
       expect(call[1]?.body).toContain("status=DELETED");
+    });
+  });
+
+  describe("budget stated in the account currency", () => {
+    type TextResult = { content: Array<{ type: string; text: string }> };
+
+    beforeEach(() => {
+      metaApiClient.resetForTests();
+      resetAccountCurrencyCacheForTests();
+    });
+
+    const create = async (extra: Record<string, unknown>) => {
+      const server = createMockMcpServer();
+      registerCampaignTools(server as never);
+      const result = await server._registeredTools[2].handler({
+        account_id: "act_123",
+        name: "Budgeted",
+        objective: "OUTCOME_SALES",
+        status: "PAUSED",
+        special_ad_categories: ["NONE"],
+        buying_type: "AUCTION",
+        ...extra,
+      }) as TextResult;
+      return result.content[0].text;
+    };
+
+    const update = async (changes: Record<string, unknown>) => {
+      const server = createMockMcpServer();
+      registerCampaignTools(server as never);
+      const result = await server._registeredTools[3].handler({ campaign_id: "100123", ...changes }) as TextResult;
+      return result.content[0].text;
+    };
+
+    it("create: a COP account's daily budget is whole pesos", async () => {
+      stubWriteAndCurrencyLookup({ write: { id: "1000200" }, account: { currency: "COP" } });
+
+      const text = await create({ daily_budget: 50000 });
+
+      expect(text).toContain("Campaign created successfully!");
+      expect(text.split("\n")).toContain("Daily budget: COP 50,000 (account currency COP)");
+    });
+
+    it("create: a USD account's daily budget is hundredths of a dollar", async () => {
+      stubWriteAndCurrencyLookup({ write: { id: "1000201" }, account: { currency: "USD" } });
+
+      const text = await create({ daily_budget: 5000 });
+
+      expect(text.split("\n")).toContain("Daily budget: USD 50.00 (account currency USD)");
+    });
+
+    it("create: a lifetime budget gets its own line", async () => {
+      stubWriteAndCurrencyLookup({ write: { id: "1000202" }, account: { currency: "COP" } });
+
+      const text = await create({ lifetime_budget: 900000 });
+
+      expect(text.split("\n")).toContain("Lifetime budget: COP 900,000 (account currency COP)");
+      expect(text).not.toContain("Daily budget");
+    });
+
+    it("create: still succeeds when the currency lookup throws, and says only what it knows", async () => {
+      stubWriteAndCurrencyLookup({ write: { id: "1000203" } });
+
+      const text = await create({ daily_budget: 50000 });
+
+      expect(text).toContain("Campaign created successfully!");
+      expect(text).toContain("ID: 1000203");
+      expect(text.split("\n")).toContain(
+        "Daily budget: 50000 in the account currency's minor unit (currency not confirmed; check ads_get_account_info)",
+      );
+      expect(text).not.toContain("500.00");
+    });
+
+    it("create: writes once, and reads the currency only after the write", async () => {
+      stubWriteAndCurrencyLookup({ write: { id: "1000204" }, account: { currency: "COP" } });
+
+      await create({ daily_budget: 50000 });
+
+      expect(fetchCallSummary()).toEqual(["POST /act_123/campaigns", "GET /act_123"]);
+    });
+
+    it("create: sends the budget to Meta exactly as given, whatever the currency", async () => {
+      stubWriteAndCurrencyLookup({ write: { id: "1000205" }, account: { currency: "COP" } });
+
+      await create({ daily_budget: 50000 });
+
+      const params = new URLSearchParams(vi.mocked(fetch).mock.calls[0][1]?.body as string);
+      expect(params.get("daily_budget")).toBe("50000");
+    });
+
+    it("create: does not read the currency when the call fails", async () => {
+      stubWriteAndCurrencyLookup({
+        write: { error: { code: 100, type: "OAuthException", message: "Invalid parameter" } },
+        account: { currency: "COP" },
+      });
+
+      await expect(create({ daily_budget: 50000 })).rejects.toThrow();
+      expect(fetchCallSummary()).toEqual(["POST /act_123/campaigns"]);
+    });
+
+    it("create: does not read the currency for a campaign without a budget", async () => {
+      stubWriteAndCurrencyLookup({ write: { id: "1000206" }, account: { currency: "COP" } });
+
+      const text = await create({});
+
+      expect(fetchCallSummary()).toEqual(["POST /act_123/campaigns"]);
+      expect(text).not.toContain("budget:");
+    });
+
+    it("create: reads the currency once for several campaigns in the same account", async () => {
+      stubWriteAndCurrencyLookup({ write: { id: "1000207" }, account: { currency: "COP" } });
+
+      await create({ daily_budget: 50000 });
+      const text = await create({ daily_budget: 80000 });
+
+      expect(text.split("\n")).toContain("Daily budget: COP 80,000 (account currency COP)");
+      expect(fetchCallSummary().filter((call) => call.startsWith("GET"))).toEqual(["GET /act_123"]);
+    });
+
+    it("update: finds the campaign's account and states the new budget in its currency", async () => {
+      stubWriteAndCurrencyLookup({
+        write: { success: true },
+        entity: { account_id: "123", id: "100123" },
+        account: { currency: "COP" },
+      });
+
+      const text = await update({ daily_budget: 75000 });
+
+      expect(text).toContain("Campaign 100123 updated successfully.");
+      expect(text.split("\n")).toContain("Daily budget: COP 75,000 (account currency COP)");
+      expect(fetchCallSummary()).toEqual(["POST /100123", "GET /100123", "GET /act_123"]);
+    });
+
+    it("update: still succeeds when the currency lookup throws", async () => {
+      stubWriteAndCurrencyLookup({ write: { success: true } });
+
+      const text = await update({ lifetime_budget: 900000 });
+
+      expect(text).toContain("Campaign 100123 updated successfully.");
+      expect(text.split("\n")).toContain(
+        "Lifetime budget: 900000 in the account currency's minor unit (currency not confirmed; check ads_get_account_info)",
+      );
+    });
+
+    it("update: does not read anything when no budget changes", async () => {
+      stubWriteAndCurrencyLookup({ write: { success: true }, account: { currency: "COP" } });
+
+      await update({ status: "PAUSED" });
+
+      expect(fetchCallSummary()).toEqual(["POST /100123"]);
     });
   });
 });

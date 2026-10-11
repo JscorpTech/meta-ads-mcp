@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { z } from "zod";
 import { registerAllTools } from "../../src/tools/index.js";
+import { MINOR_UNIT_NOTE } from "../../src/meta/currency.js";
 import { createMockMcpServer } from "../setup.js";
 
 describe("registerAllTools", () => {
@@ -196,5 +198,97 @@ describe("registerAllTools", () => {
       (n) => n.includes("billing") || n.includes("spend") || n.includes("invoice"),
     );
     expect(billingTools.length).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe("money amounts in what a model reads on tools/list", () => {
+  const AMOUNT_PARAMETERS = ["daily_budget", "lifetime_budget", "bid_amount", "budget_value"];
+
+  // Meta documents the write of an ad account's spend_cap in whole currency
+  // units ("23.50 for USD $23.50"), unlike budgets and bids, so what that
+  // description should say is a separate question from the one settled here.
+  const UNIT_STILL_OPEN = ["ads_update_spend_cap"];
+
+  interface Published {
+    name: string;
+    /** The tool description and every parameter description, nested ones included. */
+    descriptions: string[];
+    parameters: Set<string>;
+  }
+
+  const collect = (node: unknown, descriptions: string[], parameters: Set<string>): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) collect(item, descriptions, parameters);
+      return;
+    }
+    if (typeof node !== "object" || node === null) return;
+    const record = node as Record<string, unknown>;
+    if (typeof record.description === "string") descriptions.push(record.description);
+    if (typeof record.properties === "object" && record.properties !== null) {
+      for (const parameter of Object.keys(record.properties)) parameters.add(parameter);
+    }
+    for (const value of Object.values(record)) collect(value, descriptions, parameters);
+  };
+
+  const published = (): Published[] => {
+    const server = createMockMcpServer();
+    registerAllTools(server as never);
+    return server._registeredTools.map((tool) => {
+      const descriptions = [tool.description];
+      const parameters = new Set<string>();
+      const shape = tool.schema as Record<string, z.ZodType> | undefined;
+      if (shape) collect(z.toJSONSchema(z.object(shape), { io: "input", unrepresentable: "any" }), descriptions, parameters);
+      return { name: tool.name, descriptions, parameters };
+    });
+  };
+
+  const saysCents = (text: string): boolean => /\bcents?\b/i.test(text);
+  const namesWholeUnitCurrencies = (text: string): boolean => /whole units/i.test(text) && /\bCOP\b/.test(text);
+
+  it("reads the description of every parameter, nested ones included", () => {
+    const clone = published().find((tool) => tool.name === "ads_clone_ad_set_bundle");
+    expect(clone?.descriptions).toContain("Name for the cloned ad set");
+    expect(clone?.parameters.has("daily_budget")).toBe(true);
+  });
+
+  it("no description says 'cents' without itself naming the currencies that have none", () => {
+    const offenders = published()
+      .filter((tool) => !UNIT_STILL_OPEN.includes(tool.name))
+      .flatMap((tool) => tool.descriptions
+        .filter((text) => saysCents(text) && !namesWholeUnitCurrencies(text))
+        .map((text) => `${tool.name}: ${text}`));
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("every tool that takes a budget or a bid carries the minor-unit note", () => {
+    const taking = published().filter((tool) => AMOUNT_PARAMETERS.some((parameter) => tool.parameters.has(parameter)));
+
+    expect(taking.map((tool) => tool.name).sort()).toEqual([
+      "ads_clone_ad_set_bundle",
+      "ads_create_ad_set",
+      "ads_create_budget_schedule",
+      "ads_create_campaign",
+      "ads_update_ad_set",
+      "ads_update_campaign",
+    ]);
+    for (const tool of taking) {
+      const noted = tool.descriptions.filter((text) => text.includes(MINOR_UNIT_NOTE));
+      expect(noted, tool.name).toHaveLength(1);
+      expect(namesWholeUnitCurrencies(noted[0]), tool.name).toBe(true);
+    }
+  });
+
+  it("the generic updater states the unit too, since its amounts travel in a free-form object", () => {
+    const generic = published().find((tool) => tool.name === "ads_update_entity");
+    expect(generic?.descriptions.some((text) => text.includes(MINOR_UNIT_NOTE))).toBe(true);
+  });
+
+  it("the exemption list holds only tools that still need it", () => {
+    const tools = published();
+    for (const name of UNIT_STILL_OPEN) {
+      const descriptions = tools.find((tool) => tool.name === name)?.descriptions ?? [];
+      expect(descriptions.some((text) => saysCents(text) && !namesWholeUnitCurrencies(text)), name).toBe(true);
+    }
   });
 });

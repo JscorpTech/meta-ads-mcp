@@ -9,6 +9,35 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **Budgets and bids are no longer described as "cents" for every
+  currency.** The tool descriptions said `5000` is `$50.00` whatever the
+  account, which is true only where Meta's currency offset is 100. For the
+  eleven currencies Meta counts in whole units (COP, CLP, CRC, HUF, ISK, IDR,
+  JPY, KRW, PYG, TWD, VND) an agent that followed the description sent a
+  budget 100 times too large. The descriptions of `ads_create_campaign`,
+  `ads_update_campaign`, `ads_create_ad_set`, `ads_update_ad_set`,
+  `ads_clone_ad_set_bundle`, `ads_create_budget_schedule` and
+  `ads_update_entity` now say the amount is in the account currency's minor
+  unit as Meta defines it, with one example of each kind, and tell the model
+  to read the account currency first. This matches what the server's own
+  guide already said. The offsets come from
+  [Meta's currency table](https://developers.facebook.com/docs/marketing-api/currencies),
+  kept in `src/meta/currency.ts`; a test fails if a description says "cents"
+  again without naming the currencies that have none. What is sent to Meta
+  does not change.
+- **Creating or updating a campaign or an ad set states the amount in the
+  account's currency.** The result gains one line per amount passed, such as
+  `Daily budget: COP 50,000 (account currency COP)` or
+  `Daily budget: USD 50.00 (account currency USD)`, so a wrong unit shows in
+  the answer to the call that set it. The currency is read after the write
+  succeeds, with one `GET` per token and account that is then answered from
+  memory; an update reads the object's account first. The read never fails
+  the call and never holds its result for more than two seconds: without a
+  currency the line gives the raw amount and says it is in the account
+  currency's minor unit. `ads_clone_ad_set_bundle` restates only a budget
+  passed in `target_ad_set`, not one copied from the source.
+  `ads_update_spend_cap` is unchanged: Meta documents that write in whole
+  currency units, not minor units, so its description is a separate fix.
 - **ffmpeg's encoders are limited to one thread.** The wrapper passed
   `-threads 1` before `-i`, which bounds decoding, and `-filter_threads 1`,
   which bounds filtering; the encoders were unbounded, so libx264 sized its

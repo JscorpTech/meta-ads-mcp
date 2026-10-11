@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { metaApiClient } from "../meta/client.js";
 import { validateMetaId } from "../utils/format.js";
+import { MINOR_UNIT_NOTE } from "../meta/currency.js";
 import { CREATE, WRITE_WARNING } from "./_register.js";
 
 export function registerBudgetTools(server: McpServer): void {
@@ -14,10 +15,10 @@ export function registerBudgetTools(server: McpServer): void {
         campaign_id: z.string().describe("Campaign ID"),
         budget_value: z
           .string()
-          .describe("Budget amount in cents (for ABSOLUTE) or multiplier value (for MULTIPLIER)"),
+          .describe(`For ABSOLUTE, a budget amount ${MINOR_UNIT_NOTE}. For MULTIPLIER, the multiplier value.`),
         budget_value_type: z
           .enum(["ABSOLUTE", "MULTIPLIER"])
-          .describe("ABSOLUTE = set exact budget in cents, MULTIPLIER = multiply current budget"),
+          .describe("ABSOLUTE = set exact budget (unit: see budget_value), MULTIPLIER = multiply current budget"),
         time_start: z.string().describe("ISO 8601 start time for the budget increase"),
         time_end: z.string().describe("ISO 8601 end time for the budget increase"),
       },
