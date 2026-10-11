@@ -188,7 +188,7 @@ describe("registerBillingTools", () => {
       const text = await setCap(0, { amount_spent: "439924", currency: "USD" });
 
       expect(text).not.toContain("Spend cap now: none");
-      expect(text).toContain("Spend cap now: not confirmed (Meta's read-back did not include it). Check with ads_get_spend_limit.");
+      expect(text).toContain("Spend cap now: not confirmed (Meta's read-back did not include a usable value). Check with ads_get_spend_limit.");
       expect(text).toContain("Amount spent now: USD 4,399.24 (read back from Meta)");
     });
 
@@ -200,6 +200,26 @@ describe("registerBillingTools", () => {
       const nulled = await setCap(500, { spend_cap: null as unknown as string, amount_spent: "0", currency: "USD" });
       expect(nulled).not.toContain("Spend cap now: none");
       expect(nulled).toContain("Spend cap now: not confirmed");
+    });
+
+    // The same holds for a value that is there but is not a non-negative
+    // number: an empty string is not a zero.
+    it.each([[""], [" "], ["abc"], ["-5"], [false], [[]]])(
+      "does not read the unusable spend_cap %j as a cap or as 'no cap'",
+      async (value) => {
+        for (const sent of [500, 0]) {
+          const text = await setCap(sent, { spend_cap: value, amount_spent: "0", currency: "USD" });
+          const capLine = text.split("\n").find((line) => line.startsWith("Spend cap now:"));
+
+          expect(capLine).toBe("Spend cap now: not confirmed (Meta's read-back did not include a usable value). Check with ads_get_spend_limit.");
+        }
+      },
+    );
+
+    it.each(["0", "0.00", 0])("reads the explicit zero %j as no cap", async (value) => {
+      const text = await setCap(0, { spend_cap: value, amount_spent: "35", currency: "USD" });
+
+      expect(text).toContain("Spend cap now: none (read back from Meta)");
     });
 
     it("when the read-back fails, says the write succeeded and that the value is unconfirmed", async () => {
@@ -288,11 +308,11 @@ describe("registerBillingTools", () => {
       expect(lines.join("\n")).not.toContain("USD");
     });
 
-    it("ads_get_billing_info: keeps its words for an amount Meta did not send", async () => {
+    it("ads_get_billing_info: an amount Meta did not send is N/A, and a cap it did not send is not called 'No limit'", async () => {
       const lines = await read(0, { currency: "COP" });
 
       expect(lines).toContain("  Amount Spent: N/A");
-      expect(lines).toContain("  Spend Cap: No limit");
+      expect(lines).toContain("  Spend Cap: not reported by Meta");
       expect(lines).toContain("  Balance: N/A");
     });
 
@@ -329,6 +349,73 @@ describe("registerBillingTools", () => {
       expect(lines).toContain("Remaining: 2500000 (in the account currency's minor unit)");
       expect(lines).toContain("Balance: 250000 (in the account currency's minor unit)");
       expect(lines.join("\n")).not.toContain("USD");
+    });
+
+    // Meta sends spend_cap "0" for an account without a cap: read from a live
+    // account whose cap had been removed, with 35 spent since.
+    it("ads_get_spend_limit: an account without a cap says so, with no remainder and no usage", async () => {
+      const lines = await read(1, { currency: "USD", spend_cap: "0", amount_spent: "35" });
+
+      expect(lines).toEqual([
+        "Account: Cuenta",
+        "",
+        "Spend Cap: No limit set",
+        "Amount Spent: USD 0.35",
+      ]);
+    });
+
+    it.each([
+      ["a missing field", {}],
+      ["null", { spend_cap: null }],
+      ["an empty string", { spend_cap: "" }],
+      ["a blank string", { spend_cap: " " }],
+      ["text", { spend_cap: "abc" }],
+      ["a negative number", { spend_cap: "-5" }],
+    ])("ads_get_spend_limit: a cap Meta did not report (%s) is called neither a limit nor its absence", async (_label, cap) => {
+      const lines = await read(1, { currency: "USD", amount_spent: "35", ...cap });
+
+      expect(lines).toEqual([
+        "Account: Cuenta",
+        "",
+        "Spend Cap: not reported by Meta",
+        "Amount Spent: USD 0.35",
+      ]);
+    });
+
+    it("ads_get_spend_limit: a cap with nothing spent leaves the whole cap and 0.0% used", async () => {
+      const lines = await read(1, { currency: "USD", spend_cap: "100000", amount_spent: "0" });
+
+      expect(lines).toContain("Remaining: USD 1,000.00");
+      expect(lines).toContain("Usage: 0.0% of spend cap used");
+    });
+
+    it("ads_get_spend_limit: a cap without an amount spent prints neither a remainder nor a usage", async () => {
+      const lines = await read(1, { currency: "USD", spend_cap: "100000" });
+
+      expect(lines).toEqual(["Account: Cuenta", "", "Spend Cap: USD 1,000.00", "Amount Spent: N/A"]);
+    });
+
+    it("ads_get_spend_limit: an overspent cap reports a usage above 100%", async () => {
+      const lines = await read(1, { currency: "USD", spend_cap: "100000", amount_spent: "125000" });
+
+      expect(lines).toContain("Remaining: USD -250.00");
+      expect(lines).toContain("Usage: 125.0% of spend cap used");
+    });
+
+    it("ads_get_billing_info: an account without a cap reads 'No limit', not a cap of zero", async () => {
+      const lines = await read(0, { currency: "USD", amount_spent: "35", spend_cap: "0" });
+
+      expect(lines).toContain("  Spend Cap: No limit");
+    });
+
+    it.each([
+      ["null", { spend_cap: null }],
+      ["an empty string", { spend_cap: "" }],
+      ["text", { spend_cap: "abc" }],
+    ])("ads_get_billing_info: a cap Meta did not report (%s) is not called 'No limit'", async (_label, cap) => {
+      const lines = await read(0, { currency: "USD", amount_spent: "35", ...cap });
+
+      expect(lines).toContain("  Spend Cap: not reported by Meta");
     });
   });
 

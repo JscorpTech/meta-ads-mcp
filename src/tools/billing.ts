@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { metaApiClient } from "../meta/client.js";
 import { normalizeAccountId, validateMetaId, formatBudget } from "../utils/format.js";
 import { formatMinorAmount } from "../meta/currency.js";
+import { readSpendCap, SPEND_CAP_NOT_REPORTED } from "../meta/spend-cap.js";
 import { READ, UPDATE, WRITE_WARNING } from "./_register.js";
 
 interface BillingInfo {
@@ -144,6 +145,10 @@ export function registerBillingTools(server: McpServer): void {
       const statusText = info.account_status !== undefined
         ? ACCOUNT_STATUS_MAP[info.account_status] ?? `UNKNOWN (${info.account_status})`
         : "N/A";
+      const cap = readSpendCap(info.spend_cap);
+      const spendCapText = cap.state === "unknown"
+        ? SPEND_CAP_NOT_REPORTED
+        : cap.state === "none" ? "No limit" : formatMinorAmount(info.spend_cap, currency);
 
       const lines: string[] = [
         `Account: ${info.name ?? info.id}`,
@@ -154,7 +159,7 @@ export function registerBillingTools(server: McpServer): void {
         ``,
         `Spending:`,
         `  Amount Spent: ${info.amount_spent ? formatMinorAmount(info.amount_spent, currency) : "N/A"}`,
-        `  Spend Cap: ${info.spend_cap ? formatMinorAmount(info.spend_cap, currency) : "No limit"}`,
+        `  Spend Cap: ${spendCapText}`,
         `  Balance: ${info.balance ? formatMinorAmount(info.balance, currency) : "N/A"}`,
       ];
 
@@ -196,24 +201,24 @@ export function registerBillingTools(server: McpServer): void {
 
       const currency = info.currency;
 
-      const spendCap = info.spend_cap ? parseInt(info.spend_cap, 10) : null;
+      const cap = readSpendCap(info.spend_cap);
+      const spendCapText = cap.state === "unknown"
+        ? SPEND_CAP_NOT_REPORTED
+        : cap.state === "none" ? "No limit set" : formatMinorAmount(info.spend_cap, currency);
       const amountSpent = info.amount_spent ? parseInt(info.amount_spent, 10) : null;
-      const remaining =
-        spendCap !== null && amountSpent !== null ? spendCap - amountSpent : null;
 
       const lines: string[] = [
         `Account: ${info.name ?? info.id}`,
         ``,
-        `Spend Cap: ${spendCap !== null ? formatMinorAmount(spendCap, currency) : "No limit set"}`,
+        `Spend Cap: ${spendCapText}`,
         `Amount Spent: ${amountSpent !== null ? formatMinorAmount(amountSpent, currency) : "N/A"}`,
       ];
 
-      if (remaining !== null) {
-        lines.push(`Remaining: ${formatMinorAmount(remaining, currency)}`);
-        if (spendCap !== null && spendCap > 0) {
-          const pctUsed = ((amountSpent! / spendCap) * 100).toFixed(1);
-          lines.push(`Usage: ${pctUsed}% of spend cap used`);
-        }
+      // A remainder and a usage exist only against a cap.
+      if (cap.state === "set" && amountSpent !== null) {
+        lines.push(`Remaining: ${formatMinorAmount(cap.minor - amountSpent, currency)}`);
+        const pctUsed = ((amountSpent / cap.minor) * 100).toFixed(1);
+        lines.push(`Usage: ${pctUsed}% of spend cap used`);
       }
 
       if (info.balance) lines.push(`Balance: ${formatMinorAmount(info.balance, currency)}`);
@@ -268,14 +273,15 @@ export function registerBillingTools(server: McpServer): void {
           { fields: SPEND_CAP_READ_BACK_FIELDS },
         );
         // "none" is a claim about what Meta holds: only an explicit zero
-        // earns it. A read-back that leaves the field out confirms nothing.
-        const cap = held.spend_cap;
-        if (cap === undefined || cap === null) {
-          lines.push("Spend cap now: not confirmed (Meta's read-back did not include it). Check with ads_get_spend_limit.");
-        } else if (Number(cap) === 0) {
+        // earns it. A read-back that leaves the field out, or sends something
+        // that is not a non-negative number, confirms nothing.
+        const cap = readSpendCap(held.spend_cap);
+        if (cap.state === "unknown") {
+          lines.push("Spend cap now: not confirmed (Meta's read-back did not include a usable value). Check with ads_get_spend_limit.");
+        } else if (cap.state === "none") {
           lines.push("Spend cap now: none (read back from Meta)");
         } else {
-          lines.push(`Spend cap now: ${formatMinorAmount(cap, held.currency)} (read back from Meta)`);
+          lines.push(`Spend cap now: ${formatMinorAmount(held.spend_cap, held.currency)} (read back from Meta)`);
         }
         if (held.amount_spent !== undefined) {
           lines.push(`Amount spent now: ${formatMinorAmount(held.amount_spent, held.currency)} (read back from Meta)`);

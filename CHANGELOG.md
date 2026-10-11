@@ -93,6 +93,24 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   which is not a field of an ad account, and Meta rejected the whole call
   with `(#100) Tried accessing nonexisting field`. The field and its line
   are gone; every field it requests is in Meta's AdAccount reference.
+- **An account without a spend cap reads as "no limit", and only then.**
+  Meta sends `spend_cap: "0"` for an account that has no cap (its AdAccount
+  reference: "A value of 0 means no spending-cap"; read back the same way
+  from a live account). Four places read that field, each in its own way.
+  `ads_get_spend_limit` printed `Spend Cap: USD 0.00` and a negative
+  `Remaining`, `ads_get_billing_info` printed `USD 0.00`, and
+  `ads_get_account_info` printed `0`. They now print `No limit set`,
+  `No limit` and `None`, and `ads_get_spend_limit` prints no `Remaining` or
+  `Usage` line without a cap. The opposite mistake is gone too: a `spend_cap`
+  that Meta left out or sent as `null` was read as "no limit" by those three,
+  and the read-back of `ads_update_spend_cap` reported an empty string as
+  `none`. A field that is missing, `null`, empty or anything else that is not
+  a non-negative number (text or a negative number used to print as `n/a`, as
+  an amount or as sent) now reads `not reported by Meta`, and `not confirmed`
+  after a write. One function, `readSpendCap` in `src/meta/spend-cap.ts`,
+  decides it for all four. A cap that is a whole number, which is what Meta
+  sends, prints as before; `ads_get_spend_limit` cut the decimals off any
+  other and now shows the value as it arrived. Nothing sent to Meta changes.
 - **`ads_get_ad_accounts` no longer prints a status or a currency it was not
   given.** With a custom `fields` list that left out `account_status` or
   `currency`, every account read `Status: DISABLED` and
