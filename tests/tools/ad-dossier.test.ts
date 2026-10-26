@@ -886,6 +886,33 @@ describe("dossier of an ad that reuses a post", () => {
     expect(result.content[0].text).not.toContain("IGNORE");
   });
 
+  it("keeps the spec poster of a malformed video id and makes it the Instagram video's poster", async () => {
+    const creative = {
+      id: "5001",
+      name: "Malformed id",
+      effective_instagram_media_id: "17900000000000001",
+      object_story_spec: { video_data: { video_id: "bad", image_url: "https://scontent.xx.fbcdn.net/poster.jpg" } },
+    };
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": creative, "/17900000000000001": IG_VIDEO }));
+    const fetchImages = vi.fn(async (assets: Array<{ source_url?: string; downloaded: boolean; block_index?: number }>) => {
+      assets.forEach((asset, index) => {
+        asset.downloaded = true;
+        asset.block_index = index;
+      });
+      return { blocks: assets.map(() => ({ type: "image", data: "aW1n", mimeType: "image/jpeg" })), bytes: 3 * assets.length };
+    });
+    const { call } = setup({ fetchImages: fetchImages as never });
+
+    const result = await call({ include_media: true, video_delivery: "thumbnail" });
+
+    const media = lastJson(result).media as { images: Array<{ source_url?: string }>; videos: Array<{ key: string; delivered: { mode: string; block_indexes: number[] } }> };
+    expect(media.images.map((i) => i.source_url)).toEqual(["https://scontent.xx.fbcdn.net/poster.jpg"]);
+    expect(media.videos[0]).toMatchObject({ key: "meta:instagram:17900000000000001", delivered: { mode: "thumbnail", block_indexes: [1] } });
+    // The creative itself is reported as data; the id must reach neither the media nor the brief.
+    expect(JSON.stringify(media)).not.toContain('"bad"');
+    expect(result.content[0].text).not.toContain("Video bad");
+  });
+
   it("treats an empty source as no file", async () => {
     vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": POST_CREATIVE, "/6101": { ...PAGE_VIDEO, source: "" }, "/17900000000000001": IG_VIDEO }));
     const { call, deliverVideos } = setup();

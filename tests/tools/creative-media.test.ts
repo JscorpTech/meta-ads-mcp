@@ -692,6 +692,47 @@ describe("ads_get_creative_media for an ad that reuses a post", () => {
     expect(fetchCalls().some((u) => u.includes("IGNORE"))).toBe(false);
   });
 
+  it("keeps the spec poster of a malformed video id and links it to the Instagram video", async () => {
+    const { handler, download } = registerWithDownload();
+    const creative = {
+      id: "5101",
+      name: "Malformed id",
+      effective_instagram_media_id: "17900000000000001",
+      object_story_spec: { video_data: { video_id: "bad", image_url: "https://scontent.xx.fbcdn.net/poster.jpg" } },
+    };
+    vi.stubGlobal("fetch", route({ "5101": creative, "17900000000000001": IG_VIDEO }));
+
+    const result = await handler({ creative_id: "5101" }) as ToolResult;
+
+    expect(download).toHaveBeenCalledWith("https://scontent.xx.fbcdn.net/poster.jpg", expect.anything());
+    const json = resultJson(result);
+    expect((json.videos as Array<Record<string, unknown>>)[0]).toMatchObject({ instagram_media_id: "17900000000000001", thumbnail_block_index: 0 });
+    expect(JSON.stringify(result)).not.toContain('"bad"');
+  });
+
+  it("keeps that poster even when Instagram has no file", async () => {
+    const { handler, download } = registerWithDownload();
+    const creative = { id: "5101", name: "Malformed id", object_story_spec: { video_data: { video_id: "bad", image_url: "https://scontent.xx.fbcdn.net/poster.jpg" } } };
+    vi.stubGlobal("fetch", route({ "5101": creative }));
+
+    const result = await handler({ creative_id: "5101" }) as ToolResult;
+
+    expect(download).toHaveBeenCalledWith("https://scontent.xx.fbcdn.net/poster.jpg", expect.anything());
+    expect(resultJson(result).videos).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain('"bad"');
+  });
+
+  it("links the enlarged thumbnail to the Instagram video of a malformed top-level id", async () => {
+    const { handler } = registerWithDownload();
+    vi.stubGlobal("fetch", route({ "5101": { ...POST_CREATIVE, video_id: "bad" }, "17900000000000001": IG_VIDEO }));
+
+    const result = await handler({ creative_id: "5101" }) as ToolResult;
+
+    const json = resultJson(result);
+    expect((json.images as Array<Record<string, unknown>>).map((i) => i.role)).toEqual(["thumbnail_fallback"]);
+    expect((json.videos as Array<Record<string, unknown>>)[0]).toMatchObject({ instagram_media_id: "17900000000000001", thumbnail_block_index: 0, thumbnail_url: POST_CREATIVE.thumbnail_url });
+  });
+
   it("treats an empty source as no file", async () => {
     const { handler } = registerWithDownload();
     vi.stubGlobal("fetch", route({ "5101": POST_CREATIVE, "6101": { ...PAGE_VIDEO, source: "" }, "17900000000000001": IG_VIDEO }));

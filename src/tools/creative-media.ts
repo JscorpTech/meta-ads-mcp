@@ -366,89 +366,82 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
       });
 
       const videoAssets: VideoAssetMeta[] = [];
+      // Keyed by videoKey, so a video known only by its Instagram id has a poster too.
       const videoThumbAssets = new Map<string, ImageAssetMeta>();
       if (include_videos) {
-        const instagramAsset = (file: InstagramVideoFile): VideoAssetMeta => ({
+        const fallbackPoster = imageAssets.find((asset) => asset.role === "thumbnail_fallback");
+        // A reused post's enlarged thumbnail is its video's poster; otherwise the
+        // video's own thumbnail, then the one the spec names.
+        const posterOf = (ref: VideoRef | undefined, videoThumb?: string): ImageAssetMeta | undefined => {
+          if ((!ref || ref.posterIsFallback) && fallbackPoster) return fallbackPoster;
+          const url = videoThumb
+            ?? (ref && (wantSmall ? resolvedHashUrl(ref.specThumbnailHash) ?? ref.specThumbnailUrl : ref.specThumbnailUrl ?? resolvedHashUrl(ref.specThumbnailHash)));
+          if (!url) return undefined;
+          const asset: ImageAssetMeta = { role: "video_thumbnail", source_url: url, downloaded: false };
+          imageAssets.push(asset);
+          return asset;
+        };
+        const pushVideo = (asset: VideoAssetMeta, poster: ImageAssetMeta | undefined): void => {
+          videoAssets.push(asset);
+          if (poster) videoThumbAssets.set(videoKey(asset), poster);
+        };
+        const instagramAsset = (file: InstagramVideoFile, poster: ImageAssetMeta | undefined): VideoAssetMeta => ({
           instagram_media_id: file.media_id,
           source_url: file.source_url,
           file_from: "instagram",
-          thumbnail_url: file.thumbnail_url,
+          thumbnail_url: poster?.source_url ?? file.thumbnail_url,
           permalink_url: file.permalink_url,
           download_hint: downloadHint(file.media_id),
         });
-        const fallbackPoster = imageAssets.find((asset) => asset.role === "thumbnail_fallback");
         for (const ref of videos) {
           // An id Graph would reject is never kept or reused: such a video is
-          // reached, if at all, through the validated Instagram id.
+          // reached, if at all, through the validated Instagram id. Its poster stays.
           if (!isMetaId(ref.videoId)) {
+            const poster = posterOf(ref);
             const file = await findInstagramVideoFile(creative, videos.length);
-            if (file) videoAssets.push(instagramAsset(file));
+            if (file) pushVideo(instagramAsset(file, poster), poster);
             else warnings.push("A video of this creative has a malformed id and was skipped.");
             continue;
           }
-          const ownPoster = ref.posterIsFallback ? fallbackPoster : undefined;
           try {
             const video = await metaApiClient.get<AdVideo>(
               `/${ref.videoId}`,
               { fields: VIDEO_DETAIL_FIELDS.join(",") },
             );
-            const thumbnailUrl = ownPoster?.source_url
-              ?? pickVideoThumbnailUrl(video, image_size)
-              ?? (wantSmall ? resolvedHashUrl(ref.specThumbnailHash) ?? ref.specThumbnailUrl : ref.specThumbnailUrl ?? resolvedHashUrl(ref.specThumbnailHash));
-            if (ownPoster) {
-              videoThumbAssets.set(video.id, ownPoster);
-            } else if (thumbnailUrl) {
-              const thumbAsset: ImageAssetMeta = {
-                role: "video_thumbnail",
-                source_url: thumbnailUrl,
-                downloaded: false,
-              };
-              imageAssets.push(thumbAsset);
-              videoThumbAssets.set(video.id, thumbAsset);
-            }
+            const poster = posterOf(ref, pickVideoThumbnailUrl(video, image_size));
             const ownSource = videoFileUrl(video);
             const file = ownSource ? undefined : await findInstagramVideoFile(creative, videos.length);
             const sourceUrl = ownSource ?? file?.source_url;
-            videoAssets.push({
+            pushVideo({
               video_id: video.id,
               title: video.title,
               length_seconds: video.length,
               source_url: sourceUrl,
               file_from: file ? "instagram" : undefined,
-              thumbnail_url: thumbnailUrl,
+              thumbnail_url: poster?.source_url,
               permalink_url: video.permalink_url ?? file?.permalink_url,
               download_hint: sourceUrl ? downloadHint(video.id) : undefined,
               error: sourceUrl ? undefined : noVideoFileError(video),
-            });
+            }, poster);
           } catch (err) {
-            const fallbackThumb = wantSmall
-              ? resolvedHashUrl(ref.specThumbnailHash) ?? ref.specThumbnailUrl
-              : ref.specThumbnailUrl ?? resolvedHashUrl(ref.specThumbnailHash);
-            if (ownPoster) {
-              videoThumbAssets.set(ref.videoId, ownPoster);
-            } else if (fallbackThumb) {
-              const thumbAsset: ImageAssetMeta = {
-                role: "video_thumbnail",
-                source_url: fallbackThumb,
-                downloaded: false,
-              };
-              imageAssets.push(thumbAsset);
-              videoThumbAssets.set(ref.videoId, thumbAsset);
-            }
+            const poster = posterOf(ref);
             const file = await findInstagramVideoFile(creative, videos.length);
-            videoAssets.push({
+            pushVideo({
               video_id: ref.videoId,
               source_url: file?.source_url,
               file_from: file ? "instagram" : undefined,
               permalink_url: file?.permalink_url,
               download_hint: file ? downloadHint(ref.videoId) : undefined,
               error: file ? undefined : err instanceof Error ? err.message : String(err),
-            });
+            }, poster);
           }
         }
         if (videos.length === 0) {
           const file = await findInstagramVideoFile(creative, 0);
-          if (file) videoAssets.push(instagramAsset(file));
+          if (file) {
+            const poster = posterOf(undefined, undefined);
+            pushVideo(instagramAsset(file, poster), poster);
+          }
         }
       }
 
@@ -466,7 +459,7 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
       const totalBytes = imageResult.bytes;
 
       for (const video of videoAssets) {
-        const thumbAsset = video.video_id ? videoThumbAssets.get(video.video_id) : undefined;
+        const thumbAsset = videoThumbAssets.get(videoKey(video));
         if (thumbAsset?.downloaded) video.thumbnail_block_index = thumbAsset.block_index;
       }
 
