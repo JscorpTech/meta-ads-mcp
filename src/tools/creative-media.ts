@@ -212,6 +212,9 @@ export function collectCreativeMedia(creative: AdCreative): { images: ImageRef[]
   return { images, videos };
 }
 
+/** A thumbnail's width, or 0: only a finite number counts (converting an object can throw). */
+const widthOf = (t: { width?: unknown }): number => (typeof t.width === "number" && Number.isFinite(t.width) ? t.width : 0);
+
 export function pickVideoThumbnailUrl(video: AdVideo, size: "full" | "small"): string | undefined {
   // Graph data is untrusted: an entry that is not a thumbnail with a uri is skipped, never read.
   const data: unknown = video.thumbnails?.data;
@@ -220,7 +223,7 @@ export function pickVideoThumbnailUrl(video: AdVideo, size: "full" | "small"): s
       typeof t === "object" && t !== null && typeof (t as { uri?: unknown }).uri === "string",
   );
   const largest = thumbs.length > 0
-    ? [...thumbs].sort((a, b) => (Number(b.width) || 0) - (Number(a.width) || 0))[0]
+    ? [...thumbs].sort((a, b) => widthOf(b) - widthOf(a))[0]
     : undefined;
   const picture = typeof video.picture === "string" ? video.picture : undefined;
   return size === "small" ? picture ?? largest?.uri : largest?.uri ?? picture;

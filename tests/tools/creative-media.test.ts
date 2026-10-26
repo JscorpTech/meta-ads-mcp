@@ -886,5 +886,11 @@ describe("pickVideoThumbnailUrl", () => {
     expect(pickVideoThumbnailUrl(odd, "full")).toBe("https://cdn.example.com/ok.jpg");
     const notArray = { id: "1", picture: "https://cdn.example.com/p.jpg", thumbnails: { data: "x" } } as unknown as Parameters<typeof pickVideoThumbnailUrl>[0];
     expect(pickVideoThumbnailUrl(notArray, "full")).toBe("https://cdn.example.com/p.jpg");
+    // A width that is not a number counts as 0 instead of being converted (an object without toString throws).
+    const oddWidth = {
+      id: "1",
+      thumbnails: { data: [{ uri: "https://cdn.example.com/a.jpg", width: { toString: null } }, { uri: "https://cdn.example.com/b.jpg", width: 64 }] },
+    } as unknown as Parameters<typeof pickVideoThumbnailUrl>[0];
+    expect(pickVideoThumbnailUrl(oddWidth, "full")).toBe("https://cdn.example.com/b.jpg");
   });
 });
