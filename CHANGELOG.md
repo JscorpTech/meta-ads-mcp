@@ -9,6 +9,30 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **The video tools find and fetch the video of an ad that reuses a post or
+  an Instagram post.** Such a creative names its video only in its top-level
+  `video_id`, which the server never read: `ads_analyze_video` and
+  `ads_get_video_media` answered "No video found", and
+  `ads_get_creative_media` and `ads_get_ad_dossier` showed a thumbnail only.
+  The creative read now asks for `video_id`, `object_type`,
+  `effective_instagram_media_id` and `source_instagram_media_id`, and the
+  top-level video joins the others, deduplicated and after them, so
+  `video_index` positions do not move. That video usually belongs to another
+  page, and Graph returns no `source` for it. When the creative resolves to
+  exactly one video and has an Instagram media id (the effective one, then
+  the source one), the server reads that media and, if it is a `VIDEO` with
+  a `media_url`, uses that MP4 instead, fetched through the same host allowlist
+  (`.cdninstagram.com` was already on it). The label says the file came from
+  the ad's Instagram post. A creative with no video id whose Instagram post
+  is a video (and whose `object_type` is not `PHOTO`) is resolved the same
+  way. A creative with several videos gets no fallback, and a video that has
+  its own `source` costs no extra call. When there is still no file, the
+  error names the page that owns the video by id (the video read now asks
+  for `from{id}`; the page name is never requested) and the next step: the
+  same ad is public in the Ad Library, through `ads_library_scrape`, then
+  `ads_get_video_media` or `ads_analyze_video` with `dataset_id` and
+  `ad_archive_id`. The server does not run that scrape itself, since it
+  spends Apify credit.
 - **`ads_upload_ad_image` names the image after the `name` argument.** Meta
   names an ad image after the multipart file name and ignores the separate
   `name` field, and the tool always sent `image<ext>`, so every image

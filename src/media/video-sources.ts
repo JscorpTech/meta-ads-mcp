@@ -4,6 +4,7 @@ import type { AdCreative, AdVideo } from "../meta/types/index.js";
 import { VIDEO_DETAIL_FIELDS } from "../meta/types/video.js";
 import { validateMetaId } from "../utils/format.js";
 import { collectCreativeMedia, pickVideoThumbnailUrl } from "../tools/creative-media.js";
+import { findInstagramVideoFile, FROM_INSTAGRAM, instagramOnlySource, noVideoFileError, type InstagramVideoFile } from "./video-file-fallback.js";
 
 export type VideoOrigin = "meta" | "ad_library";
 
@@ -70,6 +71,17 @@ export interface MetaVideoSourcesInfo {
 
 const DEFAULT_MAX_VIDEOS = 3;
 
+function withInstagramFile(source: VideoSource, file: InstagramVideoFile): VideoSource {
+  return {
+    ...source,
+    label: `${source.label} (${FROM_INSTAGRAM})`,
+    source_url: file.source_url,
+    thumbnail_url: source.thumbnail_url ?? file.thumbnail_url,
+    permalink_url: source.permalink_url ?? file.permalink_url,
+    error: undefined,
+  };
+}
+
 function sourceFromVideo(video: AdVideo, fallbackThumbnail?: string): VideoSource {
   return {
     key: `meta:video:${video.id}`,
@@ -81,7 +93,7 @@ function sourceFromVideo(video: AdVideo, fallbackThumbnail?: string): VideoSourc
     duration_seconds: video.length,
     permalink_url: video.permalink_url,
     title: video.title,
-    error: video.source ? undefined : "Video source URL not available (still processing, or owned by another page).",
+    error: video.source ? undefined : noVideoFileError(video),
   };
 }
 
@@ -138,24 +150,39 @@ export async function resolveMetaVideoSourcesWithInfo(input: MetaVideoSourceInpu
     thumbnail_height: 1080,
   });
   const { videos } = collectCreativeMedia(creative);
+  const info = (sources: VideoSource[], truncated: number): MetaVideoSourcesInfo => ({
+    sources,
+    truncated,
+    creative_id: creative.id,
+    account_id: accountId ?? creative.account_id,
+  });
+  if (videos.length === 0) {
+    const file = await findInstagramVideoFile(creative, 0);
+    const sources = file ? [instagramOnlySource(file)] : [];
+    if (input.video_index !== undefined && !sources[input.video_index]) {
+      throw new Error("video_index " + input.video_index + " is out of range: this creative has " + sources.length + " addressable video(s).");
+    }
+    return info(sources, 0);
+  }
+  const resolveOne = async (ref: (typeof videos)[number]): Promise<VideoSource> => {
+    const source = await fetchVideo(ref.videoId, ref.specThumbnailUrl);
+    if (source.source_url) return source;
+    const file = await findInstagramVideoFile(creative, videos.length);
+    return file ? withInstagramFile(source, file) : source;
+  };
   if (input.video_index !== undefined) {
     const ref = videos[input.video_index];
     if (!ref) {
       throw new Error("video_index " + input.video_index + " is out of range: this creative has " + videos.length + " addressable video(s).");
     }
-    return { sources: [await fetchVideo(ref.videoId, ref.specThumbnailUrl)], truncated: 0, creative_id: creative.id, account_id: accountId ?? creative.account_id };
+    return info([await resolveOne(ref)], 0);
   }
   const selected = videos.slice(0, maxVideos);
   const sources: VideoSource[] = [];
   for (const ref of selected) {
-    sources.push(await fetchVideo(ref.videoId, ref.specThumbnailUrl));
+    sources.push(await resolveOne(ref));
   }
-  return {
-    sources,
-    truncated: videos.length - selected.length,
-    creative_id: creative.id,
-    account_id: accountId ?? creative.account_id,
-  };
+  return info(sources, videos.length - selected.length);
 }
 
 export async function resolveMetaVideoSources(input: MetaVideoSourceInput): Promise<VideoSource[]> {

@@ -20,6 +20,7 @@ import {
   type VideoDeliveryDeps,
 } from "../media/video-delivery.js";
 import type { VideoSource } from "../media/video-sources.js";
+import { findInstagramVideoFile, FROM_INSTAGRAM, instagramOnlySource, noVideoFileError } from "../media/video-file-fallback.js";
 import { boundedClone } from "../utils/bounded-json.js";
 import { normalizeAccountId, validateMetaId } from "../utils/format.js";
 import { scrubCredentials } from "../utils/scrub-credentials.js";
@@ -583,7 +584,9 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
               poster = { role: "video_thumbnail", source_url: thumbnail, downloaded: false };
               images.push(poster);
             }
-            if (!video?.source) {
+            const file = video?.source ? undefined : await findInstagramVideoFile(creative, media.videos.length);
+            const sourceUrl = video?.source ?? file?.source_url;
+            if (!sourceUrl) {
               // Still reported: the ad has a video, and the reason it could not
               // be delivered is what the reader needs. Its poster, if one was
               // attached, is still worth looking at.
@@ -595,30 +598,39 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
                 duration_seconds: video?.length,
                 delivered: { mode: "none", block_indexes: [] },
                 thumbnail_url: sanitizeMetadataUrl(thumbnail),
-                error: video
-                  ? "Video source URL not available (still processing, or owned by another page)."
-                  : "The video could not be read from Meta.",
+                error: video ? noVideoFileError(video) : "The video could not be read from Meta.",
               };
               undeliverable.push(record);
               if (poster) posterFor.set(record, poster);
               continue;
             }
             {
+              const videoId = video?.id ?? ref.videoId;
               const source: VideoSource = {
-                key: `meta:video:${video.id}`,
+                key: `meta:video:${videoId}`,
                 // The label is printed outside the untrusted fence, so it carries
                 // no advertiser text; the title is reported inside it instead.
-                label: `Video ${video.id}`,
+                label: file ? `Video ${videoId} (${FROM_INSTAGRAM})` : `Video ${videoId}`,
                 origin: "meta",
-                video_id: video.id,
-                source_url: video.source,
+                video_id: videoId,
+                source_url: sourceUrl,
                 // The poster is attached with the images; the pipeline must not fetch it twice.
                 thumbnail_url: undefined,
-                duration_seconds: video.length,
-                permalink_url: video.permalink_url,
-                title: singleLine(video.title, 120) || undefined,
+                duration_seconds: video?.length,
+                permalink_url: video?.permalink_url ?? file?.permalink_url,
+                title: singleLine(video?.title, 120) || undefined,
               };
               sources.push(source);
+              if (poster) posterFor.set(source, poster);
+            }
+          }
+
+          if (media.videos.length === 0) {
+            const file = await findInstagramVideoFile(creative, 0);
+            if (file) {
+              const source = { ...instagramOnlySource(file), thumbnail_url: undefined };
+              sources.push(source);
+              const poster = images.find((image) => image.role === "thumbnail_fallback");
               if (poster) posterFor.set(source, poster);
             }
           }

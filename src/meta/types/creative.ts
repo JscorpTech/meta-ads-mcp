@@ -24,6 +24,8 @@ export interface AdCreative {
   image_hash?: string;
   image_url?: string;
   thumbnail_url?: string;
+  video_id?: string;
+  object_type?: string;
   object_story_spec?: Record<string, unknown>;
   asset_feed_spec?: Record<string, unknown>;
   call_to_action_type?: CallToActionType;
@@ -81,4 +83,8 @@ export const CREATIVE_DEFAULT_FIELDS = [
   "effective_object_story_id",
   "status",
   "url_tags",
+  "video_id",
+  "object_type",
+  "effective_instagram_media_id",
+  "source_instagram_media_id",
 ] as const;

@@ -17,6 +17,7 @@ import {
   type VideoDeliveryDeps,
 } from "../media/video-delivery.js";
 import type { VideoSource } from "../media/video-sources.js";
+import { findInstagramVideoFile, FROM_INSTAGRAM, noVideoFileError } from "../media/video-file-fallback.js";
 import { fetchCreativeImageBlocks } from "../media/creative-images.js";
 import { asRecord, getString } from "./creatives.js";
 import { READ } from "./_register.js";
@@ -62,7 +63,10 @@ interface ImageAssetMeta {
 }
 
 interface VideoAssetMeta {
-  video_id: string;
+  /** Absent for a video known only through the creative's Instagram post. */
+  video_id?: string;
+  instagram_media_id?: string;
+  file_from?: "instagram";
   title?: string;
   length_seconds?: number;
   source_url?: string;
@@ -73,6 +77,18 @@ interface VideoAssetMeta {
   delivered?: DeliveredVideo["delivered"];
   error?: string;
 }
+
+function videoKey(video: VideoAssetMeta): string {
+  return video.video_id ? `meta:video:${video.video_id}` : `meta:instagram:${video.instagram_media_id}`;
+}
+
+function videoName(video: VideoAssetMeta): string {
+  const name = video.video_id ? `Video ${video.video_id}` : `Instagram video ${video.instagram_media_id}`;
+  return video.file_from ? `${name} (${FROM_INSTAGRAM})` : name;
+}
+
+const downloadHint = (id: string): string =>
+  `Download with: curl -L -o video_${id}.mp4 "<source_url>" — or pass the URL directly to a video-capable model (e.g. Gemini).`;
 
 export function collectCreativeMedia(creative: AdCreative): { images: ImageRef[]; videos: VideoRef[] } {
   const images: ImageRef[] = [];
@@ -175,6 +191,12 @@ export function collectCreativeMedia(creative: AdCreative): { images: ImageRef[]
       specThumbnailUrl: getString(record, "thumbnail_url"),
       specThumbnailHash: getString(record, "thumbnail_hash"),
     });
+  }
+
+  // An ad that reuses a post names its video only here. Last, so the
+  // positions video_index addresses stay where they were.
+  if (typeof creative.video_id === "string" && creative.video_id) {
+    addVideo({ videoId: creative.video_id, specThumbnailUrl: creative.thumbnail_url });
   }
 
   if (images.length === 0 && videos.length === 0 && creative.thumbnail_url) {
@@ -357,17 +379,18 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
               imageAssets.push(thumbAsset);
               videoThumbAssets.set(video.id, thumbAsset);
             }
+            const file = video.source ? undefined : await findInstagramVideoFile(creative, videos.length);
+            const sourceUrl = video.source ?? file?.source_url;
             videoAssets.push({
               video_id: video.id,
               title: video.title,
               length_seconds: video.length,
-              source_url: video.source,
+              source_url: sourceUrl,
+              file_from: file ? "instagram" : undefined,
               thumbnail_url: thumbnailUrl,
-              permalink_url: video.permalink_url,
-              download_hint: video.source
-                ? `Download with: curl -L -o video_${video.id}.mp4 "<source_url>" — or pass the URL directly to a video-capable model (e.g. Gemini).`
-                : undefined,
-              error: video.source ? undefined : "Video source URL not available (still processing, or missing permission).",
+              permalink_url: video.permalink_url ?? file?.permalink_url,
+              download_hint: sourceUrl ? downloadHint(video.id) : undefined,
+              error: sourceUrl ? undefined : noVideoFileError(video),
             });
           } catch (err) {
             const fallbackThumb = wantSmall
@@ -382,9 +405,27 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
               imageAssets.push(thumbAsset);
               videoThumbAssets.set(ref.videoId, thumbAsset);
             }
+            const file = await findInstagramVideoFile(creative, videos.length);
             videoAssets.push({
               video_id: ref.videoId,
-              error: err instanceof Error ? err.message : String(err),
+              source_url: file?.source_url,
+              file_from: file ? "instagram" : undefined,
+              permalink_url: file?.permalink_url,
+              download_hint: file ? downloadHint(ref.videoId) : undefined,
+              error: file ? undefined : err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+        if (videos.length === 0) {
+          const file = await findInstagramVideoFile(creative, 0);
+          if (file) {
+            videoAssets.push({
+              instagram_media_id: file.media_id,
+              source_url: file.source_url,
+              file_from: "instagram",
+              thumbnail_url: file.thumbnail_url,
+              permalink_url: file.permalink_url,
+              download_hint: downloadHint(file.media_id),
             });
           }
         }
@@ -404,7 +445,7 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
       const totalBytes = imageResult.bytes;
 
       for (const video of videoAssets) {
-        const thumbAsset = videoThumbAssets.get(video.video_id);
+        const thumbAsset = video.video_id ? videoThumbAssets.get(video.video_id) : undefined;
         if (thumbAsset?.downloaded) video.thumbnail_block_index = thumbAsset.block_index;
       }
 
@@ -414,8 +455,8 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
         const sources: VideoSource[] = videoAssets
           .filter((v) => v.source_url)
           .map((v) => ({
-            key: `meta:video:${v.video_id}`,
-            label: `Video ${v.video_id}`,
+            key: videoKey(v),
+            label: videoName(v),
             origin: "meta",
             video_id: v.video_id,
             source_url: v.source_url,
@@ -438,7 +479,7 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
         const offset = imageBlocks.length + 1;
         videoBlocks.push(...delivery.blocks);
         for (const delivered of delivery.videos) {
-          const asset = videoAssets.find((v) => v.video_id === delivered.video_id);
+          const asset = videoAssets.find((v) => videoKey(v) === delivered.key);
           if (!asset) continue;
           asset.delivered = {
             ...delivered.delivered,
@@ -447,11 +488,11 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
           if (delivered.error && !asset.error) asset.error = delivered.error;
           if (delivered.delivered.mode === "frames") {
             const ts = (delivered.delivered.frame_timestamps ?? []).map((t) => `${t.toFixed(1)}s`).join(", ");
-            deliverySummary.push(`Video ${asset.video_id}: keyframes attached as block(s) ${asset.delivered.block_indexes.join(", ")} (contact sheet, read left-to-right, top-to-bottom; sampled at ${ts}).`);
+            deliverySummary.push(`${videoName(asset)}: keyframes attached as block(s) ${asset.delivered.block_indexes.join(", ")} (contact sheet, read left-to-right, top-to-bottom; sampled at ${ts}).`);
           } else if (delivered.delivered.mode === "url") {
-            deliverySummary.push(`Video ${asset.video_id}: signed URL(s) attached as resource_link block(s) ${asset.delivered.block_indexes.join(", ")}.`);
+            deliverySummary.push(`${videoName(asset)}: signed URL(s) attached as resource_link block(s) ${asset.delivered.block_indexes.join(", ")}.`);
           } else if (delivered.error) {
-            deliverySummary.push(`Video ${asset.video_id}: ${delivered.error}`);
+            deliverySummary.push(`${videoName(asset)}: ${delivered.error}`);
           }
         }
         warnings.push(...delivery.warnings.filter((w) => w !== VIDEO_EXPIRY_WARNING));
@@ -479,8 +520,8 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
         for (const video of videoAssets) {
           summaryLines.push(
             video.source_url
-              ? `Video ${video.video_id}${video.length_seconds ? ` (${video.length_seconds}s)` : ""}: ${video_delivery === "thumbnail" ? "thumbnail attached; " : ""}signed source_url in the JSON metadata (curl -L -o video_${video.video_id}.mp4 "<source_url>"), or call ads_get_video_media (delivery=frames for keyframes, delivery=inline to embed the MP4 for a video-capable model).`
-              : `Video ${video.video_id}: ${video.error ?? "no source URL available"}.`,
+              ? `${videoName(video)}${video.length_seconds ? ` (${video.length_seconds}s)` : ""}: ${video_delivery === "thumbnail" ? "thumbnail attached; " : ""}signed source_url in the JSON metadata (curl -L -o video_${video.video_id ?? video.instagram_media_id}.mp4 "<source_url>"), or call ads_get_video_media (delivery=frames for keyframes, delivery=inline to embed the MP4 for a video-capable model).`
+              : `${videoName(video)}: ${video.error ?? "no source URL available."}`,
           );
         }
         summaryLines.push(...deliverySummary);

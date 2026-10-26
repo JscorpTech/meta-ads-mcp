@@ -596,6 +596,96 @@ describe("ads_get_creative_media video_delivery", () => {
   });
 });
 
+// An own-account ad that reuses a post of another page. Fictional ids.
+describe("ads_get_creative_media for an ad that reuses a post", () => {
+  const POST_CREATIVE = {
+    id: "5101",
+    name: "Reused post",
+    video_id: "6101",
+    object_type: "VIDEO",
+    effective_object_story_id: "7101_6101",
+    effective_instagram_media_id: "17900000000000001",
+    thumbnail_url: "https://scontent.xx.fbcdn.net/post-thumb.jpg",
+  };
+  const PAGE_VIDEO = { id: "6101", length: 30, picture: "https://scontent.xx.fbcdn.net/v-pic.jpg", from: { id: "7101" } };
+  const IG_URL = "https://scontent.cdninstagram.com/o1/v/ig.mp4?oe=69617495";
+  const IG_VIDEO = { id: "17900000000000001", media_type: "VIDEO", media_url: IG_URL };
+
+  beforeEach(() => setupTestToken());
+  afterEach(() => {
+    cleanupTestToken();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  function route(routes: Record<string, unknown>) {
+    return vi.fn(async (url: string) => {
+      const body = routes[new URL(url).pathname.split("/").pop() as string];
+      return body === undefined
+        ? mockFetchResponse({ error: { message: "Unsupported get request", code: 100 } }, { status: 400 })
+        : mockFetchResponse(body);
+    });
+  }
+
+  function noDelivery() {
+    return vi.fn(async () => ({ blocks: [], videos: [], warnings: [], bytes: 0 }));
+  }
+
+  it("reports the video and takes its file from the Instagram post", async () => {
+    const server = createMockMcpServer();
+    const deliverVideos = noDelivery();
+    registerCreativeMediaTools(server as never, { download: fakeDownload() as never, deliverVideos: deliverVideos as never });
+    vi.stubGlobal("fetch", route({ "5101": POST_CREATIVE, "6101": PAGE_VIDEO, "17900000000000001": IG_VIDEO }));
+
+    const result = await server._registeredTools[0].handler({ creative_id: "5101", video_delivery: "frames" }) as ToolResult;
+
+    const videos = resultJson(result).videos as Array<Record<string, unknown>>;
+    expect(videos).toHaveLength(1);
+    expect(videos[0]).toMatchObject({ video_id: "6101", source_url: IG_URL, file_from: "instagram" });
+    expect(videos[0].error).toBeUndefined();
+    const [sources] = deliverVideos.mock.calls[0] as unknown as [Array<Record<string, unknown>>];
+    expect(sources[0]).toMatchObject({ video_id: "6101", source_url: IG_URL });
+    expect(String(sources[0].label)).toMatch(/Instagram/);
+  });
+
+  it("names the owning page and the Ad Library route when there is no file", async () => {
+    const { handler } = registerWithDownload();
+    vi.stubGlobal("fetch", route({ "5101": POST_CREATIVE, "6101": PAGE_VIDEO, "17900000000000001": { ...IG_VIDEO, media_url: undefined } }));
+
+    const result = await handler({ creative_id: "5101" }) as ToolResult;
+
+    const videos = resultJson(result).videos as Array<Record<string, unknown>>;
+    expect(videos[0].source_url).toBeUndefined();
+    expect(String(videos[0].error)).toContain("view_all_page_id=7101");
+    expect(String(result.content[0].text)).toContain("view_all_page_id=7101");
+  });
+
+  it("finds the video of an Instagram post creative that names no video id", async () => {
+    const server = createMockMcpServer();
+    const deliverVideos = noDelivery();
+    registerCreativeMediaTools(server as never, { download: fakeDownload() as never, deliverVideos: deliverVideos as never });
+    const { video_id: _ignored, ...noVideoId } = POST_CREATIVE;
+    vi.stubGlobal("fetch", route({ "5101": noVideoId, "17900000000000001": IG_VIDEO }));
+
+    const result = await server._registeredTools[0].handler({ creative_id: "5101", video_delivery: "frames" }) as ToolResult;
+
+    const videos = resultJson(result).videos as Array<Record<string, unknown>>;
+    expect(videos).toHaveLength(1);
+    expect(videos[0]).toMatchObject({ instagram_media_id: "17900000000000001", source_url: IG_URL, file_from: "instagram" });
+    const [sources] = deliverVideos.mock.calls[0] as unknown as [Array<Record<string, unknown>>];
+    expect(sources[0]).toMatchObject({ source_url: IG_URL });
+  });
+
+  it("does not ask Instagram when the video has its own source", async () => {
+    const { handler } = registerWithDownload();
+    vi.stubGlobal("fetch", route({ "5101": POST_CREATIVE, "6101": { ...PAGE_VIDEO, source: "https://video.xx.fbcdn.net/v.mp4" }, "17900000000000001": IG_VIDEO }));
+
+    await handler({ creative_id: "5101" });
+
+    expect(fetchCalls().some((u) => u.includes("/17900000000000001"))).toBe(false);
+  });
+});
+
 describe("collectCreativeMedia", () => {
   it("walks all spec locations and dedupes by hash and url", () => {
     const { images, videos } = collectCreativeMedia({

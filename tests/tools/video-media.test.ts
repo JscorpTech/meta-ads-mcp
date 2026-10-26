@@ -191,3 +191,59 @@ describe("ads_get_video_media", () => {
     expect(JSON.stringify(result.content)).not.toContain("SECRET123");
   });
 });
+
+// An own-account ad that reuses a post of another page. Fictional ids.
+describe("ads_get_video_media for an ad that reuses a post", () => {
+  const POST_CREATIVE = {
+    id: "5101",
+    video_id: "6101",
+    object_type: "VIDEO",
+    effective_instagram_media_id: "17900000000000001",
+    thumbnail_url: "https://scontent.xx.fbcdn.net/post-thumb.jpg",
+  };
+  const PAGE_VIDEO = { id: "6101", length: 30, picture: "https://scontent.xx.fbcdn.net/v-pic.jpg", from: { id: "7101" } };
+  const IG_URL = "https://scontent.cdninstagram.com/o1/v/ig.mp4?oe=69617495";
+
+  beforeEach(() => setupTestToken());
+  afterEach(() => {
+    cleanupTestToken();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  function route(routes: Record<string, unknown>) {
+    return vi.fn(async (url: string) => {
+      const body = routes[new URL(url).pathname.split("/").pop() as string];
+      return body === undefined
+        ? mockFetchResponse({ error: { message: "Unsupported get request", code: 100 } }, { status: 400 })
+        : mockFetchResponse(body);
+    });
+  }
+
+  it("downloads the file of the ad's Instagram post", async () => {
+    const downloaded: string[] = [];
+    const { handler, deps } = setup();
+    const realDownload = deps.downloadVideo!;
+    deps.downloadVideo = async (url, opts) => {
+      downloaded.push(url);
+      return realDownload(url, opts);
+    };
+    vi.stubGlobal("fetch", route({ "5101": POST_CREATIVE, "6101": PAGE_VIDEO, "17900000000000001": { media_type: "VIDEO", media_url: IG_URL } }));
+
+    const result = (await handler({ creative_id: "5101", delivery: "frames" }, EXTRA)) as ToolResult;
+
+    expect(result.isError).toBeUndefined();
+    expect(downloaded).toEqual([IG_URL]);
+    expect(String(result.content[0].text)).toMatch(/Instagram/);
+  });
+
+  it("says where the file is when Meta and Instagram give none", async () => {
+    const { handler } = setup();
+    vi.stubGlobal("fetch", route({ "5101": POST_CREATIVE, "6101": PAGE_VIDEO }));
+
+    const result = (await handler({ creative_id: "5101", delivery: "frames" }, EXTRA)) as ToolResult;
+
+    expect(String(result.content[0].text)).toContain("view_all_page_id=7101");
+    expect(String(result.content[0].text)).toMatch(/ads_library_scrape/);
+  });
+});

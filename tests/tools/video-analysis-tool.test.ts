@@ -239,3 +239,52 @@ describe("ads_analyze_video", () => {
     expect(JSON.stringify(res.content)).not.toContain("SECRET123");
   });
 });
+
+// An own-account ad that reuses a post of another page. Fictional ids.
+describe("ads_analyze_video for an ad that reuses a post", () => {
+  const POST_CREATIVE = {
+    id: "5101",
+    video_id: "6101",
+    object_type: "VIDEO",
+    effective_instagram_media_id: "17900000000000001",
+  };
+  const PAGE_VIDEO = { id: "6101", length: 30, from: { id: "7101" } };
+  const IG_URL = "https://scontent.cdninstagram.com/o1/v/ig.mp4?oe=69617495";
+
+  beforeEach(() => setupTestToken());
+  afterEach(() => {
+    cleanupTestToken();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  function route(routes: Record<string, unknown>) {
+    return vi.fn(async (url: string) => {
+      const body = routes[new URL(url).pathname.split("/").pop() as string];
+      return body === undefined
+        ? new Response(JSON.stringify({ error: { message: "Unsupported get request", code: 100 } }), { status: 400 })
+        : new Response(JSON.stringify(body), { status: 200 });
+    });
+  }
+
+  it("analyzes the file of the ad's Instagram post", async () => {
+    const { call, analyze } = setup({ resolveVideoSources: undefined });
+    vi.stubGlobal("fetch", route({ "5101": POST_CREATIVE, "6101": PAGE_VIDEO, "17900000000000001": { media_type: "VIDEO", media_url: IG_URL } }));
+
+    await call({ creative_id: "5101" });
+
+    const [source] = analyze.mock.calls[0] as unknown as [VideoSource];
+    expect(source).toMatchObject({ video_id: "6101", source_url: IG_URL });
+  });
+
+  it("says where the file is when Meta and Instagram give none", async () => {
+    const { call } = setup({
+      analyze: undefined,
+      resolveVideoSources: undefined,
+      resolveKey: async () => ({ key: "k", source: "env", tenantId: "tenant-1" }),
+    } as never);
+    vi.stubGlobal("fetch", route({ "5101": POST_CREATIVE, "6101": PAGE_VIDEO }));
+
+    await expect(call({ ad_id: undefined, creative_id: "5101" })).rejects.toThrow(/view_all_page_id=7101/);
+  });
+});

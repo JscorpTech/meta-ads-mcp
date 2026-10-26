@@ -10,6 +10,8 @@ export interface AdVideo {
   updated_time?: string;
   status?: { video_status: string };
   permalink_url?: string;
+  /** The page that owns the video. */
+  from?: { id?: string };
 }
 
 export const VIDEO_DEFAULT_FIELDS = [
@@ -36,4 +38,6 @@ export const VIDEO_DETAIL_FIELDS = [
   "updated_time",
   "status",
   "permalink_url",
+  // Only the id: the page name is third-party text.
+  "from{id}",
 ] as const;
