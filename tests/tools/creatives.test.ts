@@ -80,7 +80,7 @@ describe("registerCreativeTools", () => {
       const url = new URL(vi.mocked(fetch).mock.calls[0][0] as string);
       expect(url.pathname).toContain("/40123");
       expect(url.searchParams.get("fields")).toBe(
-        "id,name,title,body,image_hash,image_url,thumbnail_url,object_story_spec,asset_feed_spec,call_to_action_type,link_url,effective_object_story_id,status,url_tags",
+        "id,name,title,body,image_hash,image_url,thumbnail_url,object_story_spec,asset_feed_spec,call_to_action_type,link_url,effective_object_story_id,status,url_tags,video_id,object_type,effective_instagram_media_id,source_instagram_media_id",
       );
     });
 

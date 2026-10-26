@@ -32,6 +32,18 @@ Ask what your own model can ingest, then pick once. Getting this wrong wastes ei
 
 If the source has several videos, the response says so. Analyze them one at a time rather than raising the cap.
 
+## Where the file comes from
+
+Meta gives the MP4 of a video your own page uploaded. An ad that reuses a post, or an Instagram post, often runs a video another page owns, and Meta returns no file for it. The server then takes the playable MP4 of the ad's Instagram post instead, when the creative has one video and its Instagram post is a video. The response labels that video "file from the ad's Instagram post". It is the same ad, so analyze it as usual.
+
+When neither gives a file, the error names the page that owns the video by id. The same ad is public in the Ad Library, so the next step costs Apify credit (about 0.75 USD per 1,000 ads) and is yours to choose:
+
+1. `ads_library_scrape` with `url` = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&view_all_page_id=<page_id>&search_type=page&media_type=video` and a small `count`, such as 50.
+2. Find the ad by its text in `ads_library_get_results`.
+3. `ads_get_video_media` or `ads_analyze_video` with its `dataset_id` and `ad_archive_id`.
+
+A creative with several videos gets no Instagram fallback, because nothing says which of them the Instagram post is.
+
 ## Reading the hook
 
 The first three seconds. Score it 1 to 5 and say why, in terms someone can act on.
