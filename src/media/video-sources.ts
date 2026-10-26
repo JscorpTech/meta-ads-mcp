@@ -4,7 +4,7 @@ import type { AdCreative, AdVideo } from "../meta/types/index.js";
 import { VIDEO_DETAIL_FIELDS } from "../meta/types/video.js";
 import { validateMetaId } from "../utils/format.js";
 import { collectCreativeMedia, pickVideoThumbnailUrl } from "../tools/creative-media.js";
-import { findInstagramVideoFile, FROM_INSTAGRAM, instagramOnlySource, noVideoFileError, type InstagramVideoFile } from "./video-file-fallback.js";
+import { findInstagramVideoFile, FROM_INSTAGRAM, instagramOnlySource, noVideoFileError, videoFileUrl, type InstagramVideoFile } from "./video-file-fallback.js";
 
 export type VideoOrigin = "meta" | "ad_library";
 
@@ -83,17 +83,18 @@ function withInstagramFile(source: VideoSource, file: InstagramVideoFile): Video
 }
 
 function sourceFromVideo(video: AdVideo, fallbackThumbnail?: string): VideoSource {
+  const sourceUrl = videoFileUrl(video);
   return {
     key: `meta:video:${video.id}`,
     label: `Video ${video.id}${video.title ? ` "${video.title}"` : ""}`,
     origin: "meta",
     video_id: video.id,
-    source_url: video.source,
+    source_url: sourceUrl,
     thumbnail_url: pickVideoThumbnailUrl(video, "full") ?? fallbackThumbnail,
     duration_seconds: video.length,
     permalink_url: video.permalink_url,
     title: video.title,
-    error: video.source ? undefined : noVideoFileError(video),
+    error: sourceUrl ? undefined : noVideoFileError(video),
   };
 }
 

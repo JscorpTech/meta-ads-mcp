@@ -26,7 +26,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   the ad's Instagram post. A creative with no video id whose Instagram post
   is a video (and whose `object_type` is not `PHOTO`) is resolved the same
   way. A creative with several videos gets no fallback, and a video that has
-  its own `source` costs no extra call. When there is still no file, the
+  its own `source` (a non-empty string) costs no extra call. A video id that
+  is not a valid Meta id is never used: such a video is reached only through
+  the Instagram media id, or skipped with a warning. A reused post keeps its
+  enlarged thumbnail, also with `include_videos=false`, and that image is
+  the video's poster. When there is still no file, the
   error names the page that owns the video by id (the video read now asks
   for `from{id}`; the page name is never requested) and the next step: the
   same ad is public in the Ad Library, through `ads_library_scrape`, then

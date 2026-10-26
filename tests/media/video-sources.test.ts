@@ -255,6 +255,15 @@ describe("resolveMetaVideoSources for an ad that reuses a post", () => {
     expect(new URL(fetchCalls()[0]).searchParams.get("fields")).toContain("from{id}");
   });
 
+  it("treats an empty source as no file", async () => {
+    vi.stubGlobal("fetch", route({ "5101": POST_CREATIVE, "6101": { ...PAGE_VIDEO, source: "" } }));
+
+    const [source] = await resolveMetaVideoSources({ creative_id: "5101" });
+
+    expect(source.source_url).toBeUndefined();
+    expect(source.error).toContain(`view_all_page_id=${PAGE_ID}`);
+  });
+
   it("does not ask Instagram for a creative with several videos", async () => {
     vi.stubGlobal("fetch", route({
       "5101": { ...POST_CREATIVE, video_id: undefined, asset_feed_spec: { videos: [{ video_id: "6101" }, { video_id: "6102" }] } },

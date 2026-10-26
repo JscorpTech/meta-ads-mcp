@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { metaApiClient } from "../meta/client.js";
-import { normalizeAccountId, validateMetaId } from "../utils/format.js";
+import { isMetaId, normalizeAccountId, validateMetaId } from "../utils/format.js";
 import { CREATIVE_DEFAULT_FIELDS } from "../meta/types/creative.js";
 import { IMAGE_DEFAULT_FIELDS } from "../meta/types/image.js";
 import { VIDEO_DETAIL_FIELDS } from "../meta/types/video.js";
@@ -17,7 +17,7 @@ import {
   type VideoDeliveryDeps,
 } from "../media/video-delivery.js";
 import type { VideoSource } from "../media/video-sources.js";
-import { findInstagramVideoFile, FROM_INSTAGRAM, noVideoFileError } from "../media/video-file-fallback.js";
+import { findInstagramVideoFile, FROM_INSTAGRAM, noVideoFileError, videoFileUrl, type InstagramVideoFile } from "../media/video-file-fallback.js";
 import { fetchCreativeImageBlocks } from "../media/creative-images.js";
 import { asRecord, getString } from "./creatives.js";
 import { READ } from "./_register.js";
@@ -44,6 +44,8 @@ export interface VideoRef {
   videoId: string;
   specThumbnailUrl?: string;
   specThumbnailHash?: string;
+  /** The creative's thumbnail_fallback image is this video's poster. */
+  posterIsFallback?: boolean;
 }
 
 interface ImageAssetMeta {
@@ -193,13 +195,17 @@ export function collectCreativeMedia(creative: AdCreative): { images: ImageRef[]
     });
   }
 
+  // Decided before the top-level video: a reused post keeps its enlarged
+  // thumbnail, which then serves as that video's poster.
+  const thumbnailFallback = images.length === 0 && videos.length === 0 && Boolean(creative.thumbnail_url);
+
   // An ad that reuses a post names its video only here. Last, so the
   // positions video_index addresses stay where they were.
   if (typeof creative.video_id === "string" && creative.video_id) {
-    addVideo({ videoId: creative.video_id, specThumbnailUrl: creative.thumbnail_url });
+    addVideo({ videoId: creative.video_id, specThumbnailUrl: creative.thumbnail_url, posterIsFallback: thumbnailFallback || undefined });
   }
 
-  if (images.length === 0 && videos.length === 0 && creative.thumbnail_url) {
+  if (thumbnailFallback) {
     addImage({ role: "thumbnail_fallback", url: creative.thumbnail_url });
   }
 
@@ -362,15 +368,36 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
       const videoAssets: VideoAssetMeta[] = [];
       const videoThumbAssets = new Map<string, ImageAssetMeta>();
       if (include_videos) {
+        const instagramAsset = (file: InstagramVideoFile): VideoAssetMeta => ({
+          instagram_media_id: file.media_id,
+          source_url: file.source_url,
+          file_from: "instagram",
+          thumbnail_url: file.thumbnail_url,
+          permalink_url: file.permalink_url,
+          download_hint: downloadHint(file.media_id),
+        });
+        const fallbackPoster = imageAssets.find((asset) => asset.role === "thumbnail_fallback");
         for (const ref of videos) {
+          // An id Graph would reject is never kept or reused: such a video is
+          // reached, if at all, through the validated Instagram id.
+          if (!isMetaId(ref.videoId)) {
+            const file = await findInstagramVideoFile(creative, videos.length);
+            if (file) videoAssets.push(instagramAsset(file));
+            else warnings.push("A video of this creative has a malformed id and was skipped.");
+            continue;
+          }
+          const ownPoster = ref.posterIsFallback ? fallbackPoster : undefined;
           try {
             const video = await metaApiClient.get<AdVideo>(
-              `/${validateMetaId(ref.videoId, "video")}`,
+              `/${ref.videoId}`,
               { fields: VIDEO_DETAIL_FIELDS.join(",") },
             );
-            const thumbnailUrl = pickVideoThumbnailUrl(video, image_size)
+            const thumbnailUrl = ownPoster?.source_url
+              ?? pickVideoThumbnailUrl(video, image_size)
               ?? (wantSmall ? resolvedHashUrl(ref.specThumbnailHash) ?? ref.specThumbnailUrl : ref.specThumbnailUrl ?? resolvedHashUrl(ref.specThumbnailHash));
-            if (thumbnailUrl) {
+            if (ownPoster) {
+              videoThumbAssets.set(video.id, ownPoster);
+            } else if (thumbnailUrl) {
               const thumbAsset: ImageAssetMeta = {
                 role: "video_thumbnail",
                 source_url: thumbnailUrl,
@@ -379,8 +406,9 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
               imageAssets.push(thumbAsset);
               videoThumbAssets.set(video.id, thumbAsset);
             }
-            const file = video.source ? undefined : await findInstagramVideoFile(creative, videos.length);
-            const sourceUrl = video.source ?? file?.source_url;
+            const ownSource = videoFileUrl(video);
+            const file = ownSource ? undefined : await findInstagramVideoFile(creative, videos.length);
+            const sourceUrl = ownSource ?? file?.source_url;
             videoAssets.push({
               video_id: video.id,
               title: video.title,
@@ -396,7 +424,9 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
             const fallbackThumb = wantSmall
               ? resolvedHashUrl(ref.specThumbnailHash) ?? ref.specThumbnailUrl
               : ref.specThumbnailUrl ?? resolvedHashUrl(ref.specThumbnailHash);
-            if (fallbackThumb) {
+            if (ownPoster) {
+              videoThumbAssets.set(ref.videoId, ownPoster);
+            } else if (fallbackThumb) {
               const thumbAsset: ImageAssetMeta = {
                 role: "video_thumbnail",
                 source_url: fallbackThumb,
@@ -418,16 +448,7 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
         }
         if (videos.length === 0) {
           const file = await findInstagramVideoFile(creative, 0);
-          if (file) {
-            videoAssets.push({
-              instagram_media_id: file.media_id,
-              source_url: file.source_url,
-              file_from: "instagram",
-              thumbnail_url: file.thumbnail_url,
-              permalink_url: file.permalink_url,
-              download_hint: downloadHint(file.media_id),
-            });
-          }
+          if (file) videoAssets.push(instagramAsset(file));
         }
       }
 

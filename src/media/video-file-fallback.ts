@@ -18,6 +18,11 @@ export function noVideoFileError(video: AdVideo): string {
     "then call ads_get_video_media or ads_analyze_video with its dataset_id + ad_archive_id.";
 }
 
+/** The video's own file: a `source` Graph sent as a non-empty string, or nothing. */
+export function videoFileUrl(video: AdVideo | null | undefined): string | undefined {
+  return typeof video?.source === "string" && video.source.length > 0 ? video.source : undefined;
+}
+
 export interface InstagramVideoFile {
   media_id: string;
   source_url: string;

@@ -20,9 +20,9 @@ import {
   type VideoDeliveryDeps,
 } from "../media/video-delivery.js";
 import type { VideoSource } from "../media/video-sources.js";
-import { findInstagramVideoFile, FROM_INSTAGRAM, instagramOnlySource, noVideoFileError } from "../media/video-file-fallback.js";
+import { findInstagramVideoFile, FROM_INSTAGRAM, instagramOnlySource, noVideoFileError, videoFileUrl, type InstagramVideoFile } from "../media/video-file-fallback.js";
 import { boundedClone } from "../utils/bounded-json.js";
-import { normalizeAccountId, validateMetaId } from "../utils/format.js";
+import { isMetaId, normalizeAccountId, validateMetaId } from "../utils/format.js";
 import { scrubCredentials } from "../utils/scrub-credentials.js";
 import { singleLine } from "../utils/single-line.js";
 import { collectCreativeMedia, pickVideoThumbnailUrl, resolveImageHashes } from "./creative-media.js";
@@ -571,21 +571,39 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
           // Videos that cannot be delivered are reported alongside the ones
           // that can, so a mixed creative does not hide half its media.
           const undeliverable: DeliveredVideo[] = [];
+          // A reused post's enlarged thumbnail is its video's poster.
+          const fallbackPoster = images.find((image) => image.role === "thumbnail_fallback");
+          const addInstagramSource = (file: InstagramVideoFile): void => {
+            const source = { ...instagramOnlySource(file), thumbnail_url: undefined };
+            sources.push(source);
+            if (fallbackPoster) posterFor.set(source, fallbackPoster);
+          };
           for (const ref of media.videos) {
+            // An id Graph would reject is never kept or reused: such a video is
+            // reached, if at all, through the validated Instagram id.
+            if (!isMetaId(ref.videoId)) {
+              const file = await findInstagramVideoFile(creative, media.videos.length);
+              if (file) addInstagramSource(file);
+              else warnings.push("A video of this creative has a malformed id and was skipped.");
+              continue;
+            }
             let video: AdVideo | null = null;
             try {
-              video = await metaApiClient.get<AdVideo>(`/${validateMetaId(ref.videoId, "video")}`, { fields: VIDEO_DETAIL_FIELDS.join(",") });
+              video = await metaApiClient.get<AdVideo>(`/${ref.videoId}`, { fields: VIDEO_DETAIL_FIELDS.join(",") });
             } catch (err) {
               warnings.push(`Video ${singleLine(ref.videoId, 40)} could not be read: ${singleLine(err instanceof Error ? err.message : String(err), 200)}`);
             }
-            const thumbnail = (video ? pickVideoThumbnailUrl(video, image_size) : undefined) ?? pickUrl(ref.specThumbnailUrl, fromHash(ref.specThumbnailHash));
-            let poster: DossierImage | undefined;
-            if (thumbnail) {
+            let poster: DossierImage | undefined = ref.posterIsFallback ? fallbackPoster : undefined;
+            const thumbnail = poster?.source_url
+              ?? (video ? pickVideoThumbnailUrl(video, image_size) : undefined)
+              ?? pickUrl(ref.specThumbnailUrl, fromHash(ref.specThumbnailHash));
+            if (!poster && thumbnail) {
               poster = { role: "video_thumbnail", source_url: thumbnail, downloaded: false };
               images.push(poster);
             }
-            const file = video?.source ? undefined : await findInstagramVideoFile(creative, media.videos.length);
-            const sourceUrl = video?.source ?? file?.source_url;
+            const ownSource = videoFileUrl(video);
+            const file = ownSource ? undefined : await findInstagramVideoFile(creative, media.videos.length);
+            const sourceUrl = ownSource ?? file?.source_url;
             if (!sourceUrl) {
               // Still reported: the ad has a video, and the reason it could not
               // be delivered is what the reader needs. Its poster, if one was
@@ -627,12 +645,7 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
 
           if (media.videos.length === 0) {
             const file = await findInstagramVideoFile(creative, 0);
-            if (file) {
-              const source = { ...instagramOnlySource(file), thumbnail_url: undefined };
-              sources.push(source);
-              const poster = images.find((image) => image.role === "thumbnail_fallback");
-              if (poster) posterFor.set(source, poster);
-            }
+            if (file) addInstagramSource(file);
           }
 
           const responseBudget = responseBytesBudget(deps.transport);
