@@ -13,6 +13,7 @@ export type CallToActionType =
   | "ORDER_NOW"
   | "WATCH_MORE"
   | "SEND_MESSAGE"
+  | "INSTAGRAM_MESSAGE"
   | "WHATSAPP_MESSAGE";
 
 export interface AdCreative {

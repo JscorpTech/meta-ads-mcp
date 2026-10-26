@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { registerCreativeTools } from "../../src/tools/creatives.js";
+import { ctaEnum, registerCreativeTools } from "../../src/tools/creatives.js";
 import {
   CREATIVE_DEFAULT_FIELDS,
   SYNTHETIC_CREATIVE_FIELDS,
@@ -31,6 +31,29 @@ describe("registerCreativeTools", () => {
     const server = createMockMcpServer();
     registerCreativeTools(server as never);
     expect(server.registerTool).toHaveBeenCalledTimes(9);
+  });
+
+  it("accepts Instagram Direct's CTA in the published schema and forwards it to Meta", async () => {
+    expect(ctaEnum.parse("INSTAGRAM_MESSAGE")).toBe("INSTAGRAM_MESSAGE");
+    const server = createMockMcpServer();
+    registerCreativeTools(server as never);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ id: "40123" })));
+    const handler = server._registeredTools.find(t => t.name === "ads_create_ad_creative")!.handler;
+    await handler({
+      account_id: "123456",
+      name: "Instagram Direct video",
+      page_id: "12345",
+      instagram_actor_id: "17841400000000000",
+      video_id: "45678",
+      image_hash: "thumbnail-hash",
+      call_to_action_type: "INSTAGRAM_MESSAGE",
+      link_url: "https://www.instagram.com/",
+    });
+    const options = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    const form = new URLSearchParams(options.body as string);
+    const story = JSON.parse(form.get("object_story_spec")!);
+    expect(story.instagram_user_id).toBe("17841400000000000");
+    expect(story.video_data.call_to_action).toEqual({type: "INSTAGRAM_MESSAGE", value: {link: "https://www.instagram.com/"}});
   });
 
   it("registers tools with expected names", () => {
