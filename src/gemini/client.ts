@@ -348,9 +348,18 @@ function num(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
-/** Only a schema-shaped 400 earns the free retry; anything else is reported as is. */
+/**
+ * Only a schema-shaped 400 earns the free retry; anything else is reported as is.
+ * Google's bare "Request contains an invalid argument." counts: it is how
+ * gemini-3.8-flash refused a schema it could not compile, naming no field.
+ */
 function isSchemaRejection(error: GeminiApiError, rawMessage: string): boolean {
-  return error.status === 400 && error.reason !== "API_KEY_INVALID" && /schema|response_?json|unknown name/i.test(rawMessage.slice(0, 2000));
+  const message = rawMessage.slice(0, 2000);
+  return (
+    error.status === 400 &&
+    error.reason !== "API_KEY_INVALID" &&
+    (/schema|response_?json|unknown name/i.test(message) || /^\s*request contains an invalid argument\.?\s*$/i.test(message))
+  );
 }
 
 const rawErrors = new WeakMap<GeminiApiError, string>();
@@ -398,7 +407,8 @@ export function createGeminiClient(config: GeminiClientConfig = {}): GeminiClien
       }
       const failure = describeFailure(response.status, body, options.key);
       logger.warn(
-        { event: "gemini_error", what: options.what, status: response.status, reason: failure.reason, keyHash: hashToken(options.key) },
+        // failure.message carries Google's own words, key scrubbed and capped: the field a 400 names.
+        { event: "gemini_error", what: options.what, status: response.status, reason: failure.reason, detail: failure.message, keyHash: hashToken(options.key) },
         "Gemini request failed",
       );
       rawErrors.set(failure, typeof body?.error?.message === "string" ? body.error.message : "");

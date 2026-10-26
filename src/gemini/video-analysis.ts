@@ -35,12 +35,28 @@ const ANALYSIS_BOUNDS = { maxDepth: 6, maxNodes: 4000, maxString: 6000, maxKeys:
 
 const timestamp = (what: string) => ({ type: "string", description: `${what}, as MM:SS from the start of the video` });
 const text = (description: string) => ({ type: "string", description });
-const stringList = (description: string, maxItems: number) => ({ type: "array", maxItems, items: { type: "string" }, description });
+/**
+ * How many entries each list keeps. Not maxItems in the schema: gemini-3.8-flash
+ * answered every request with a generic 400 INVALID_ARGUMENT while transcript
+ * (120 objects) or scenes (40) carried one (measured 2026-10-26). The model reads
+ * the cap in the description and normalizeAnalysis enforces it.
+ */
+const LIST_CAPS = {
+  transcript: 120,
+  on_screen_text: 80,
+  scenes: 40,
+  claims_and_compliance_flags: 20,
+  strengths: 8,
+  weaknesses: 8,
+  improvement_ideas: 8,
+} as const;
+const capped = (description: string, field: keyof typeof LIST_CAPS) => `${description} (at most ${LIST_CAPS[field]})`;
+const stringList = (description: string, field: keyof typeof LIST_CAPS) => ({ type: "array", items: { type: "string" }, description: capped(description, field) });
 
 /**
  * Plain JSON Schema limited to the keywords the Gemini API documents as
- * supported (no pattern, no $ref, no anyOf); timestamp formats live in the
- * descriptions instead.
+ * supported (no pattern, no $ref, no anyOf, no maxItems: see LIST_CAPS);
+ * timestamp formats live in the descriptions instead.
  */
 export const VIDEO_ANALYSIS_SCHEMA = {
   type: "object",
@@ -69,8 +85,7 @@ export const VIDEO_ANALYSIS_SCHEMA = {
     },
     transcript: {
       type: "array",
-      maxItems: 120,
-      description: "Spoken words, verbatim and in the original language",
+      description: capped("Spoken words, verbatim and in the original language", "transcript"),
       items: {
         type: "object",
         properties: { start: timestamp("Segment start"), end: timestamp("Segment end"), speaker: text("Speaker label if distinguishable"), text: text("What is said") },
@@ -79,13 +94,12 @@ export const VIDEO_ANALYSIS_SCHEMA = {
     },
     on_screen_text: {
       type: "array",
-      maxItems: 80,
-      description: "Captions, overlays, prices and any other text visible in the frame",
+      description: capped("Captions, overlays, prices and any other text visible in the frame", "on_screen_text"),
       items: { type: "object", properties: { time: timestamp("When the text appears"), text: text("The text as shown") }, required: ["time", "text"] },
     },
     scenes: {
       type: "array",
-      maxItems: 40,
+      description: capped("Scenes in order", "scenes"),
       items: {
         type: "object",
         properties: {
@@ -122,10 +136,10 @@ export const VIDEO_ANALYSIS_SCHEMA = {
         product_visible: { type: "boolean" },
       },
     },
-    claims_and_compliance_flags: stringList("Claims an ad reviewer might question: health, income, before/after, superlatives, urgency", 20),
-    strengths: stringList("What works, most important first", 8),
-    weaknesses: stringList("What holds the ad back, most important first", 8),
-    improvement_ideas: stringList("Concrete, testable changes", 8),
+    claims_and_compliance_flags: stringList("Claims an ad reviewer might question: health, income, before/after, superlatives, urgency", "claims_and_compliance_flags"),
+    strengths: stringList("What works, most important first", "strengths"),
+    weaknesses: stringList("What holds the ad back, most important first", "weaknesses"),
+    improvement_ideas: stringList("Concrete, testable changes", "improvement_ideas"),
     focus_answer: text("Direct answer to the focus question, when one was asked"),
   },
   required: ["summary", "hook", "cta", "transcript", "on_screen_text", "scenes", "strengths", "weaknesses", "improvement_ideas"],
@@ -334,6 +348,15 @@ function normalizeAnalysis(analysis: Record<string, unknown>, warnings: string[]
   if (dropped > 0) {
     warnings.push(`${dropped} malformed entr${dropped === 1 ? "y" : "ies"} in the transcript, on-screen text or scene list were dropped.`);
   }
+  const cut: string[] = [];
+  for (const [field, cap] of Object.entries(LIST_CAPS)) {
+    const list = analysis[field];
+    if (Array.isArray(list) && list.length > cap) {
+      analysis[field] = list.slice(0, cap);
+      cut.push(`${field} (${list.length})`);
+    }
+  }
+  if (cut.length > 0) warnings.push(`Lists longer than their cap were cut to it: ${cut.join(", ")}.`);
   return analysis;
 }
 

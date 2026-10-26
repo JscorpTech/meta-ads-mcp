@@ -115,6 +115,41 @@ describe("VIDEO_ANALYSIS_SCHEMA", () => {
     expect(JSON.stringify(VIDEO_ANALYSIS_SCHEMA)).not.toContain('"pattern":');
     expect(JSON.stringify(VIDEO_ANALYSIS_SCHEMA).length).toBeLessThan(8000);
   });
+
+  it("carries no maxItems: gemini-3.8-flash rejects long object lists in a response schema", () => {
+    // Measured 2026-10-26: transcript (120 objects) and scenes (40) each made every
+    // request a generic 400 INVALID_ARGUMENT; without maxItems the same schema passes.
+    expect(JSON.stringify(VIDEO_ANALYSIS_SCHEMA)).not.toContain('"maxItems"');
+  });
+});
+
+describe("list caps", () => {
+  it("cuts each list to its cap after parsing, and says so", async () => {
+    const many = (n: number, make: (i: number) => unknown) => Array.from({ length: n }, (_, i) => make(i));
+    const long = {
+      ...ANALYSIS,
+      transcript: many(130, (i) => ({ start: "00:00", text: `t${i}` })),
+      on_screen_text: many(85, (i) => ({ time: "00:00", text: `o${i}` })),
+      scenes: many(45, (i) => ({ start: "00:00", description: `s${i}` })),
+      claims_and_compliance_flags: many(25, (i) => `c${i}`),
+      strengths: many(10, (i) => `g${i}`),
+      weaknesses: many(10, (i) => `w${i}`),
+      improvement_ideas: many(10, (i) => `i${i}`),
+    };
+    const { deps } = setup({ client: fakeClient({ generateJson: vi.fn(async () => ({ json: long, usage: {}, model: "gemini-3.8-flash", schema_enforced: true })) }) });
+
+    const result = await analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {});
+
+    expect((result.analysis.transcript as unknown[]).length).toBe(120);
+    expect((result.analysis.on_screen_text as unknown[]).length).toBe(80);
+    expect((result.analysis.scenes as unknown[]).length).toBe(40);
+    expect((result.analysis.claims_and_compliance_flags as unknown[]).length).toBe(20);
+    expect((result.analysis.strengths as unknown[]).length).toBe(8);
+    expect((result.analysis.weaknesses as unknown[]).length).toBe(8);
+    expect((result.analysis.improvement_ideas as unknown[]).length).toBe(8);
+    expect((result.analysis.transcript as Array<{ text: string }>)[0]?.text).toBe("t0");
+    expect(result.warnings.join(" ")).toMatch(/cut to/i);
+  });
 });
 
 describe("analyzeVideoWithGemini", () => {

@@ -312,6 +312,20 @@ describe("GeminiClient", () => {
     expect(second.generationConfig).not.toHaveProperty("responseJsonSchema");
   });
 
+  it("retries once without the schema on Gemini's generic invalid-argument 400", async () => {
+    // How gemini-3.8-flash rejected a schema it could not compile (2026-10-26): no field named.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 400, message: "Request contains an invalid argument.", status: "INVALID_ARGUMENT" } }, { status: 400 }))
+      .mockResolvedValueOnce(jsonResponse({ candidates: [{ content: { parts: [{ text: "{\"summary\":\"ok\"}" }] }, finishReason: "STOP" }] }));
+    const client = createGeminiClient({ fetch: fetchMock as never });
+    const result = await client.generateJson({ key: KEY, model: "gemini-3.8-flash", video: { kind: "inline", data: Buffer.from("x"), mimeType: "video/mp4" }, prompt: "p", systemInstruction: "s", schema: { type: "object" }, mediaResolution: "MEDIA_RESOLUTION_LOW" });
+    expect(result.schema_enforced).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const second = JSON.parse(String((fetchMock.mock.calls[1] as unknown as FetchArgs)[1]?.body)) as { generationConfig: Record<string, unknown> };
+    expect(second.generationConfig).not.toHaveProperty("responseJsonSchema");
+  });
+
   it("does not retry a billable failure", async () => {
     for (const status of [429, 500, 503]) {
       const fetchMock = vi.fn(async () => jsonResponse({ error: { code: status, message: "nope", status: "RESOURCE_EXHAUSTED" } }, { status }));
