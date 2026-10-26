@@ -733,6 +733,17 @@ describe("ads_get_creative_media for an ad that reuses a post", () => {
     expect((json.videos as Array<Record<string, unknown>>)[0]).toMatchObject({ instagram_media_id: "17900000000000001", thumbnail_block_index: 0, thumbnail_url: POST_CREATIVE.thumbnail_url });
   });
 
+  it("does not read the video's thumbnails when the enlarged thumbnail is its poster", async () => {
+    const { handler } = registerWithDownload();
+    const video = { ...PAGE_VIDEO, source: "https://video.xx.fbcdn.net/v.mp4", thumbnails: { data: [null, { width: 128, uri: "https://scontent.xx.fbcdn.net/other.jpg" }] } };
+    vi.stubGlobal("fetch", route({ "5101": POST_CREATIVE, "6101": video }));
+
+    const result = await handler({ creative_id: "5101" }) as ToolResult;
+
+    const json = resultJson(result);
+    expect((json.videos as Array<Record<string, unknown>>)[0]).toMatchObject({ video_id: "6101", source_url: "https://video.xx.fbcdn.net/v.mp4", thumbnail_block_index: 0 });
+  });
+
   it("treats an empty source as no file", async () => {
     const { handler } = registerWithDownload();
     vi.stubGlobal("fetch", route({ "5101": POST_CREATIVE, "6101": { ...PAGE_VIDEO, source: "" }, "17900000000000001": IG_VIDEO }));
@@ -864,5 +875,16 @@ describe("pickVideoThumbnailUrl", () => {
   it("falls back across sources when fields are missing", () => {
     expect(pickVideoThumbnailUrl({ id: "1", picture: "https://cdn.example.com/p.jpg" }, "full")).toBe("https://cdn.example.com/p.jpg");
     expect(pickVideoThumbnailUrl({ id: "1" }, "small")).toBeUndefined();
+  });
+
+  it("skips thumbnail entries that are not objects with a uri instead of throwing", () => {
+    // Graph data is untrusted: a null entry used to throw on `.width` and drop a valid source.
+    const odd = {
+      id: "1",
+      thumbnails: { data: [null, { width: 999 }, { uri: "https://cdn.example.com/ok.jpg", width: 128 }] },
+    } as unknown as Parameters<typeof pickVideoThumbnailUrl>[0];
+    expect(pickVideoThumbnailUrl(odd, "full")).toBe("https://cdn.example.com/ok.jpg");
+    const notArray = { id: "1", picture: "https://cdn.example.com/p.jpg", thumbnails: { data: "x" } } as unknown as Parameters<typeof pickVideoThumbnailUrl>[0];
+    expect(pickVideoThumbnailUrl(notArray, "full")).toBe("https://cdn.example.com/p.jpg");
   });
 });

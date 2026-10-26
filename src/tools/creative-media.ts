@@ -213,11 +213,17 @@ export function collectCreativeMedia(creative: AdCreative): { images: ImageRef[]
 }
 
 export function pickVideoThumbnailUrl(video: AdVideo, size: "full" | "small"): string | undefined {
-  const thumbs = video.thumbnails?.data ?? [];
+  // Graph data is untrusted: an entry that is not a thumbnail with a uri is skipped, never read.
+  const data: unknown = video.thumbnails?.data;
+  const thumbs = (Array.isArray(data) ? data : []).filter(
+    (t): t is { uri: string; width?: unknown } =>
+      typeof t === "object" && t !== null && typeof (t as { uri?: unknown }).uri === "string",
+  );
   const largest = thumbs.length > 0
-    ? [...thumbs].sort((a, b) => (b.width ?? 0) - (a.width ?? 0))[0]
+    ? [...thumbs].sort((a, b) => (Number(b.width) || 0) - (Number(a.width) || 0))[0]
     : undefined;
-  return size === "small" ? video.picture ?? largest?.uri : largest?.uri ?? video.picture;
+  const picture = typeof video.picture === "string" ? video.picture : undefined;
+  return size === "small" ? picture ?? largest?.uri : largest?.uri ?? picture;
 }
 
 export async function resolveImageHashes(accountId: string, hashes: string[]): Promise<Map<string, AdImage>> {

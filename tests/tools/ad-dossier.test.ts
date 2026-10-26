@@ -913,6 +913,18 @@ describe("dossier of an ad that reuses a post", () => {
     expect(result.content[0].text).not.toContain("Video bad");
   });
 
+  it("does not read the video's thumbnails when the enlarged thumbnail is its poster", async () => {
+    const video = { ...PAGE_VIDEO, source: "https://video.xx.fbcdn.net/v.mp4", thumbnails: { data: [null, { width: 128, uri: "https://scontent.xx.fbcdn.net/other.jpg" }] } };
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": POST_CREATIVE, "/6101": video }));
+    const { call, deliverVideos } = setup();
+
+    const result = await call({ include_media: true, video_delivery: "frames" });
+
+    expect(lastJson(result).sections_failed ?? []).not.toContain("media");
+    const [sources] = deliverVideos.mock.calls[0] as unknown as [Array<{ source_url?: string }>];
+    expect(sources[0].source_url).toBe("https://video.xx.fbcdn.net/v.mp4");
+  });
+
   it("treats an empty source as no file", async () => {
     vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": POST_CREATIVE, "/6101": { ...PAGE_VIDEO, source: "" }, "/17900000000000001": IG_VIDEO }));
     const { call, deliverVideos } = setup();
