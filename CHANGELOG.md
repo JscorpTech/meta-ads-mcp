@@ -9,6 +9,17 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **`ads_analyze_video` works again.** `gemini-3.8-flash` answered every
+  request with a generic `400 INVALID_ARGUMENT` ("Request contains an invalid
+  argument.", no field named) because of the response schema's `maxItems` on
+  long lists of objects: `transcript` (120) and `scenes` (40) each failed on
+  their own; without `maxItems`, or with every cap at 8 or less, the same
+  request passed (measured 2026-10-26 against the live API). The schema no
+  longer carries `maxItems`: each list states its cap in its description, and
+  the analysis cuts any list past it after parsing, with a warning. That bare
+  invalid-argument 400 now also earns the free schema-less retry (a rejected
+  request is not billed), and the `gemini_error` log line carries Google's
+  message, key scrubbed, so the next refusal names its field.
 - **The video tools find and fetch the video of an ad that reuses a post or
   an Instagram post.** Such a creative names its video only in its top-level
   `video_id`, which the server never read: `ads_analyze_video` and
