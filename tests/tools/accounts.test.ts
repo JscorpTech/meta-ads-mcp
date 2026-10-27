@@ -36,6 +36,29 @@ describe("registerAccountTools", () => {
     expect(server._registeredTools[2].name).toBe("ads_get_pages_for_business");
   });
 
+  it.each([
+    [1, "ACTIVE"], [2, "DISABLED"], [3, "UNSETTLED"],
+    [7, "PENDING_RISK_REVIEW"], [8, "PENDING_SETTLEMENT"],
+    [9, "IN_GRACE_PERIOD"], [100, "PENDING_CLOSURE"],
+    [101, "CLOSED"], [201, "ANY_ACTIVE"], [202, "ANY_CLOSED"],
+    [999, "UNKNOWN (999)"],
+  ])("preserves status %s in both account summaries", async (status, label) => {
+    const server = createMockMcpServer();
+    registerAccountTools(server as never);
+    const account = { id: "act_123", account_id: "123", name: "Test", account_status: status };
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(mockFetchResponse({ data: [account] }))
+      .mockResolvedValueOnce(mockFetchResponse(account)));
+    for (const [index, args] of [
+      [0, { user_id: "me", limit: 100 }], [1, { account_id: "act_123" }],
+    ] as const) {
+      const result = await server._registeredTools[index].handler(args) as {
+        content: Array<{ text: string }>;
+      };
+      expect(result.content[0].text).toContain(`Status: ${label}`);
+    }
+  });
+
   describe("ads_get_ad_accounts handler", () => {
     it("returns account data formatted correctly", async () => {
       const server = createMockMcpServer();
@@ -85,7 +108,7 @@ describe("registerAccountTools", () => {
       expect(line).toBe("• Cuenta (123) — Status: ACTIVE — Currency: COP — Spent: 5000000");
     });
 
-    it("still prints DISABLED for an account whose status is not 1", async () => {
+    it("prints DISABLED for status 2", async () => {
       const line = await listWith(undefined, {
         id: "act_123", account_id: "123", name: "Cuenta", account_status: 2, currency: "USD", amount_spent: "0",
       });

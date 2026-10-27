@@ -16,6 +16,24 @@ import type {
 import { readSpendCap, SPEND_CAP_NOT_REPORTED } from "../meta/spend-cap.js";
 import { READ } from "./_register.js";
 
+const ACCOUNT_STATUSES: Readonly<Record<number, string>> = {
+  1: "ACTIVE",
+  2: "DISABLED",
+  3: "UNSETTLED",
+  7: "PENDING_RISK_REVIEW",
+  8: "PENDING_SETTLEMENT",
+  9: "IN_GRACE_PERIOD",
+  100: "PENDING_CLOSURE",
+  101: "CLOSED",
+  201: "ANY_ACTIVE",
+  202: "ANY_CLOSED",
+};
+
+function accountStatusLabel(status: number | undefined): string {
+  if (status === undefined) return "NOT_REPORTED";
+  return ACCOUNT_STATUSES[status] ?? `UNKNOWN (${status})`;
+}
+
 export function registerAccountTools(server: McpServer): void {
   // ─── Get Ad Accounts ─────────────────────────────────────────
   server.registerTool(
@@ -65,7 +83,7 @@ export function registerAccountTools(server: McpServer): void {
               const reference = a.account_id ?? a.id;
               return [
                 `• ${a.name ? `${a.name} (${reference})` : reference}`,
-                ...(a.account_status !== undefined ? [`Status: ${a.account_status === 1 ? "ACTIVE" : "DISABLED"}`] : []),
+                ...(a.account_status !== undefined ? [`Status: ${accountStatusLabel(a.account_status)}`] : []),
                 ...(a.currency !== undefined ? [`Currency: ${a.currency}`] : []),
                 `Spent: ${a.amount_spent ?? "N/A"}`,
               ].join(" — ");
@@ -113,7 +131,7 @@ export function registerAccountTools(server: McpServer): void {
         content: [
           {
             type: "text",
-            text: `Account: ${account.name} (${account.account_id})\nStatus: ${account.account_status === 1 ? "ACTIVE" : "DISABLED"}\nCurrency: ${account.currency}\nTimezone: ${account.timezone_name}\nSpent: ${account.amount_spent ?? "N/A"}\nBalance: ${account.balance ?? "N/A"}\nSpend Cap: ${spendCapText}`,
+            text: `Account: ${account.name} (${account.account_id})\nStatus: ${accountStatusLabel(account.account_status)}\nCurrency: ${account.currency}\nTimezone: ${account.timezone_name}\nSpent: ${account.amount_spent ?? "N/A"}\nBalance: ${account.balance ?? "N/A"}\nSpend Cap: ${spendCapText}`,
           },
           { type: "text", text: JSON.stringify(account, null, 2) },
         ],
