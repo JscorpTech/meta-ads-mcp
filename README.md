@@ -931,3 +931,17 @@ Issues, PRs and security reports are welcome — see [CONTRIBUTING.md](CONTRIBUT
 ## License
 
 [MIT](LICENSE) © 2025 ByAds — Santiago Bastidas
+
+### Upload local generated JPEGs
+
+With `META_LOCAL_MEDIA_ROOT` explicitly configured, `ads_upload_ad_image` accepts
+`local_image_path` instead of `image_url`. Only regular `.jpg`/`.jpeg` files under
+that directory are accepted (maximum 8 MiB, JPEG signature checked); symlink
+escapes and ambiguous sources are rejected. Use the returned Meta-hosted URL for
+Instagram photo/carousel publishing. Uploading an image does not create or
+activate an ad and does not publish an Instagram post. URLs may expire; validate
+that each returns a JPEG before publishing, then keep the returned media IDs.
+
+```json
+{"account_id":"act_123456", "local_image_path":"/allowed/media/generated.jpg"}
+```

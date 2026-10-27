@@ -14,6 +14,7 @@ import type { AdCreative, AdImage, AdVideo, MetaApiResponse } from "../meta/type
 import { logger } from "../utils/logger.js";
 import { assertSafePublicUrl, UnsafeUrlError } from "../utils/url-guard.js";
 import { downloadSafePublicImage } from "../utils/safe-download.js";
+import { readLocalImage } from "../utils/local-image.js";
 import { localVideoForm } from "../utils/local-video.js";
 import { READ, CREATE, UPDATE, UPLOAD, WRITE_WARNING } from "./_register.js";
 
@@ -452,22 +453,28 @@ export function registerCreativeTools(server: McpServer): void {
   server.registerTool(
     "ads_upload_ad_image",
     {
-      description: `${WRITE_WARNING}Upload an image to Meta for use in ad creatives. Provide an image URL — the server will download and upload it to Meta. Returns an image hash for use in ads_create_ad_creative.`,
+      description: `${WRITE_WARNING}Upload an image to Meta for use in ad creatives. Provide exactly one image_url or local_image_path. Local JPEG upload requires META_LOCAL_MEDIA_ROOT. Returns an image hash and Meta-hosted URL; upload alone does not activate ads or publish a post.`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
-        image_url: z.string().describe("URL of the image to upload"),
+        image_url: z.string().optional().describe("Public URL of the image to upload"),
+        local_image_path: z.string().optional().describe("Absolute JPEG path inside META_LOCAL_MEDIA_ROOT, including generated images and Telegram attachments. No public URL is required for local files."),
         name: z.string().optional().describe("Optional name for the image"),
       },
       annotations: { ...UPLOAD },
     },
-    async ({ account_id, image_url, name }) => {
+    async ({ account_id, image_url, local_image_path, name }) => {
       const id = normalizeAccountId(account_id);
 
       try {
-        const downloaded = await downloadSafePublicImage(image_url);
+        if (Number(Boolean(image_url)) + Number(Boolean(local_image_path)) !== 1) {
+          throw new Error("Provide exactly one of image_url or local_image_path.");
+        }
+        const downloaded = local_image_path
+          ? await readLocalImage(local_image_path)
+          : await downloadSafePublicImage(image_url!);
         logger.info(
-          { imageHost: downloaded.finalUrl.hostname, bytes: downloaded.buffer.length },
-          "Downloaded image for upload",
+          { source: local_image_path ? "local_file" : "public_url", bytes: downloaded.buffer.length },
+          "Prepared image for upload",
         );
 
         const formData = new FormData();
