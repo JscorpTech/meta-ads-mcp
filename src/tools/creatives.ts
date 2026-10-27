@@ -281,6 +281,7 @@ export function registerCreativeTools(server: McpServer): void {
         headline: z.string().optional().describe("Headline text"),
         description: z.string().optional().describe("Description text (shown below headline)"),
         call_to_action_type: ctaEnum.optional().describe("Call-to-action button type"),
+        app_destination: z.literal("INSTAGRAM_DIRECT").optional().describe("CTA app destination for INSTAGRAM_MESSAGE. Sent inside call_to_action.value alongside link_url; supported for existing Instagram posts and scratch-built image/video creatives."),
         url_tags: z.string().optional().describe("Query string params appended to URLs clicked from the ad (e.g. 'utm_source=meta&utm_medium=paid')"),
       },
       annotations: { ...CREATE },
@@ -288,7 +289,7 @@ export function registerCreativeTools(server: McpServer): void {
     async ({
       account_id, name, page_id, object_story_id, instagram_actor_id, source_instagram_media_id,
       image_hash, image_url, video_id, link_url, message, headline, description,
-      call_to_action_type, url_tags,
+      call_to_action_type, app_destination, url_tags,
     }) => {
       const accountPath = normalizeAccountId(account_id);
       const pageIdValidated = page_id ? validateMetaId(page_id, "page") : undefined;
@@ -305,6 +306,16 @@ export function registerCreativeTools(server: McpServer): void {
         ? validateMetaId(video_id, "video")
         : undefined;
 
+      if (app_destination && call_to_action_type !== "INSTAGRAM_MESSAGE") {
+        throw new Error("app_destination=INSTAGRAM_DIRECT requires call_to_action_type=INSTAGRAM_MESSAGE.");
+      }
+      if (app_destination && objectStoryIdValidated && !sourceInstagramMediaIdValidated) {
+        throw new Error("app_destination cannot be applied to object_story_id mode; use source_instagram_media_id or a scratch-built creative.");
+      }
+      const ctaValue = {
+        ...(link_url ? { link: link_url } : {}),
+        ...(app_destination ? { app_destination } : {}),
+      };
       const body: Record<string, string | number | boolean> = { name };
 
       if (sourceInstagramMediaIdValidated) {
@@ -314,7 +325,7 @@ export function registerCreativeTools(server: McpServer): void {
         if (call_to_action_type) {
           body.call_to_action = JSON.stringify({
             type: call_to_action_type,
-            value: link_url ? { link: link_url } : undefined,
+            value: Object.keys(ctaValue).length ? ctaValue : undefined,
           });
         }
       } else if (objectStoryIdValidated) {
@@ -348,7 +359,7 @@ export function registerCreativeTools(server: McpServer): void {
           if (call_to_action_type || link_url) {
             videoData.call_to_action = {
               type: call_to_action_type ?? "LEARN_MORE",
-              value: link_url ? { link: link_url } : undefined,
+              value: Object.keys(ctaValue).length ? ctaValue : undefined,
             };
           }
           objectStorySpec.video_data = videoData;
@@ -363,7 +374,7 @@ export function registerCreativeTools(server: McpServer): void {
           if (call_to_action_type) {
             linkData.call_to_action = {
               type: call_to_action_type,
-              value: link_url ? { link: link_url } : undefined,
+              value: Object.keys(ctaValue).length ? ctaValue : undefined,
             };
           }
           objectStorySpec.link_data = linkData;

@@ -56,6 +56,53 @@ describe("registerCreativeTools", () => {
     expect(story.video_data.call_to_action).toEqual({type: "INSTAGRAM_MESSAGE", value: {link: "https://www.instagram.com/"}});
   });
 
+  it.each(["post", "video", "image"])("forwards Instagram Direct destination for %s creatives", async (mode) => {
+    const server = createMockMcpServer();
+    registerCreativeTools(server as never);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ id: "40123" })));
+    const handler = server._registeredTools.find(t => t.name === "ads_create_ad_creative")!.handler;
+    const media = mode === "post" ? { source_instagram_media_id: "17900000000000000" }
+      : mode === "video" ? { video_id: "45678", image_hash: "thumb" }
+      : { image_hash: "photo" };
+    await handler({ account_id: "123456", name: "Direct creative", page_id: "12345",
+      instagram_actor_id: "17841400000000000", ...media,
+      call_to_action_type: "INSTAGRAM_MESSAGE", app_destination: "INSTAGRAM_DIRECT",
+      link_url: "https://www.instagram.com/" });
+    const options = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    const form = new URLSearchParams(options.body as string);
+    const story = mode === "post" ? undefined : JSON.parse(form.get("object_story_spec")!);
+    const cta = mode === "post" ? JSON.parse(form.get("call_to_action")!)
+      : mode === "video" ? story.video_data.call_to_action : story.link_data.call_to_action;
+    expect(cta).toEqual({ type: "INSTAGRAM_MESSAGE", value: {
+      link: "https://www.instagram.com/", app_destination: "INSTAGRAM_DIRECT" } });
+    if (mode === "post") {
+      expect(form.get("source_instagram_media_id")).toBe("17900000000000000");
+      expect(form.get("object_story_spec")).toBeNull();
+    }
+  });
+
+  it("rejects Direct destination with an unrelated CTA before a Meta write", async () => {
+    const server = createMockMcpServer();
+    registerCreativeTools(server as never);
+    vi.stubGlobal("fetch", vi.fn());
+    const handler = server._registeredTools.find(t => t.name === "ads_create_ad_creative")!.handler;
+    await expect(handler({ account_id: "123456", name: "Invalid", page_id: "12345",
+      image_hash: "photo", call_to_action_type: "LEARN_MORE", app_destination: "INSTAGRAM_DIRECT"
+    })).rejects.toThrow("requires call_to_action_type=INSTAGRAM_MESSAGE");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects silently dropping Direct destination in Facebook post mode", async () => {
+    const server = createMockMcpServer();
+    registerCreativeTools(server as never);
+    vi.stubGlobal("fetch", vi.fn());
+    const handler = server._registeredTools.find(t => t.name === "ads_create_ad_creative")!.handler;
+    await expect(handler({ account_id: "123456", name: "Invalid", object_story_id: "12345_67890",
+      call_to_action_type: "INSTAGRAM_MESSAGE", app_destination: "INSTAGRAM_DIRECT"
+    })).rejects.toThrow("cannot be applied to object_story_id");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("registers tools with expected names", () => {
     const server = createMockMcpServer();
     registerCreativeTools(server as never);
