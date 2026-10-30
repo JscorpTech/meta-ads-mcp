@@ -1,6 +1,6 @@
 # Tool map
 
-Every tool this server registers, grouped by what you are trying to do. 142 in total; 79 are read-only.
+Every tool this server registers, grouped by what you are trying to do. 143 in total; 79 are read-only.
 
 A ⚠️ marks a tool that changes live data, spends money or touches stored credentials. Read the tool's own description before calling one: it carries the argument rules this map deliberately leaves out.
 
@@ -94,6 +94,7 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 - `ads_get_custom_audiences` — List the custom and lookalike audiences on the account.
 - `ads_get_audience_details` — One audience: size, type and delivery status.
 - `ads_create_custom_audience` ⚠️ — Create a custom audience from a rule or a source.
+- `ads_add_custom_audience_users` ⚠️ — Preview or upload locally hashed email/phone records to a verified customer-list audience; dry-run by default.
 - `ads_create_lookalike_audience` ⚠️ — Create a lookalike from an existing audience.
 - `ads_share_custom_audience` ⚠️ — Share an audience with another ad account.
 - `ads_unshare_custom_audience` ⚠️ — Stop sharing an audience with an account.

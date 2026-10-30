@@ -17,7 +17,7 @@
 - [Who is this for?](#who-is-this-for)
 - [Aligned with Meta's official MCP](#aligned-with-metas-official-mcp)
 - [Features](#features)
-- [Tools (142 total)](#tools-142-total)
+- [Tools (143 total)](#tools-143-total)
 - [Quick start](#quick-start)
 - [Authentication — three modes](#authentication--three-modes)
 - [Setting up Sign in with Meta](#setting-up-sign-in-with-meta)
@@ -62,7 +62,7 @@ both servers.
 | | Meta's official MCP (`mcp.facebook.com/ads`) | This project |
 |---|---|---|
 | Auth model | Per-user OAuth in your AI client | **Multi-tenant**: agency operator handles N client accounts from one server |
-| Tool surface | 29 tools (campaigns, ads, catalogs, 5 insight views, opportunity_score, dataset, errors, help) | **142 tools** including the official 29-equivalent + audiences, lookalikes, lead forms, automated rules, A/B studies, async reports, billing invoices, custom conversions, asset uploads, comment moderation, cross-account macros, and full WhatsApp Business management (templates, phone numbers, flows, QR codes) |
+| Tool surface | 29 tools (campaigns, ads, catalogs, 5 insight views, opportunity_score, dataset, errors, help) | **143 tools** including the official 29-equivalent + audiences, lookalikes, lead forms, automated rules, A/B studies, async reports, billing invoices, custom conversions, asset uploads, comment moderation, cross-account macros, and full WhatsApp Business management (templates, phone numbers, flows, QR codes) |
 | Hosting | Hosted by Meta | Self-hosted on Cloud Run / your infra; tokens encrypted at rest in Firestore |
 | Cross-account | Per-user, single Meta login | Yes — `ads_portfolio_summary` aggregates across N accounts |
 | Token control | Lives in your AI client | Server-side System User token registry per agency operator |
@@ -78,7 +78,7 @@ When to use which:
 
 ## Features
 
-- **142 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, competitor research via the public Meta Ad Library (full ad cards with their images and videos), video analysis (keyframes or the MP4 itself for video-capable models), and agency-tier cross-account macros.
+- **143 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, competitor research via the public Meta Ad Library (full ad cards with their images and videos), video analysis (keyframes or the MP4 itself for video-capable models), and agency-tier cross-account macros.
 - **Aligned vocabulary** with Meta's official MCP server so agents transfer cleanly between both.
 - **Sign in with Meta (Facebook Login)** — replaces shared PINs. Each user lands their own long-lived (60-day) Meta token.
 - **System User token registry** — for tokens that don't expire, register them per user from the consent UI.
@@ -94,7 +94,7 @@ When to use which:
 - **Async reports with safe polling** — `ads_run_report_and_wait` one-shot with 5 s-min / 60 s-max backoff, proper `Job Failed` / `Job Skipped` handling.
 - **Retry logic** — exponential backoff on truly transient errors only (never on throttled requests).
 
-## Tools (142 total)
+## Tools (143 total)
 
 Ads tools use the `ads_*` naming convention, aligned with Meta's official MCP server; WhatsApp Business tools use `whatsapp_*`. Read tools declare `readOnlyHint: true`; mutating tools declare `destructiveHint` / `idempotentHint` and prefix descriptions with a `⚠️` warning.
 
@@ -113,7 +113,7 @@ Ads tools use the `ads_*` naming convention, aligned with Meta's official MCP se
 | Targeting | 7 | Interest / behavior / demographic / geo search, audience estimation, targeting description |
 | Budget | 1 | Budget schedule management |
 | Leads | 4 | Lead forms and lead retrieval |
-| Audiences | 8 | Custom audiences, lookalikes, and cross-account sharing |
+| Audiences | 9 | Custom audiences, hashed customer-list uploads, lookalikes, and cross-account sharing |
 | Previews | 2 | Ad previews before launch |
 | Pixels | 5 | Pixel details, events, custom conversions |
 | Comments | 4 | Ad comment moderation |
@@ -259,7 +259,7 @@ lines, so an analysis cannot forge the structure around it.
 
 ## Skills and MCP protocol surface
 
-An agent connecting to this server does not have to work out which of 142 tools
+An agent connecting to this server does not have to work out which of 143 tools
 answers a question. The server ships four **skills** and exposes them three
 ways.
 
@@ -273,7 +273,7 @@ them without any local installation:
 | `meta-ads://skills/meta-ads-video-analysis` | Which video delivery your model can ingest, how to read a hook and a retention curve |
 | `meta-ads://skills/meta-ads-competitor-research` | The Ad Library scrape-poll-read sequence, its cost, and how to read a scraped record |
 
-The guide carries three references of its own: a map of all 142 tools by intent
+The guide carries three references of its own: a map of all 143 tools by intent
 with the write tools marked, the call sequences for the recurring jobs, and a
 safety-and-costs page.
 
@@ -527,6 +527,7 @@ A typical agency workflow: build a CRM-derived seed audience, expand it into a l
 | `ads_get_custom_audiences` | [src/tools/audiences.ts](src/tools/audiences.ts) | List audiences (custom, website, lookalikes…) on an ad account. |
 | `ads_get_audience_details` | [src/tools/audiences.ts](src/tools/audiences.ts) | Inspect one audience: subtype, retention, size estimate. |
 | `ads_create_custom_audience` | [src/tools/audiences.ts](src/tools/audiences.ts) | Create CUSTOM / WEBSITE / APP / OFFLINE_CONVERSION / ENGAGEMENT subtypes. |
+| `ads_add_custom_audience_users` | [src/tools/audiences.ts](src/tools/audiences.ts) | Preview or upload normalized, locally SHA-256-hashed email/phone records; verifies account ownership before upload. |
 | `ads_create_lookalike_audience` | [src/tools/audiences.ts](src/tools/audiences.ts) | Build a lookalike (1 %–20 %) from a seed audience + country. |
 | `ads_share_custom_audience` | [src/tools/audiences.ts](src/tools/audiences.ts) | Share an audience with one or more ad accounts in the same Business Manager. |
 | `ads_unshare_custom_audience` | [src/tools/audiences.ts](src/tools/audiences.ts) | Revoke the share from one or more ad accounts. |
@@ -550,7 +551,23 @@ The MCP `tools/call` payload for an end-to-end run:
     } } }
 ```
 
-Returns an audience id (e.g. `23842000000000000`). Then upload hashed PII via the customer-list endpoint (separate flow — Meta requires SHA-256 of normalized email / phone), and build the lookalike:
+Returns an audience id (e.g. `23842000000000000`). Preview the customer-list upload (no API calls or upload happen by default):
+
+```json
+{
+  "name": "ads_add_custom_audience_users",
+  "arguments": {
+    "account_id": "act_1234567890",
+    "audience_id": "23842000000000000",
+    "users": [{ "email": "customer@example.com", "phone": "+1 202 555 0100" }],
+    "dry_run": true
+  }
+}
+```
+
+Set `dry_run: false` to upload. Each record needs email, phone, or both. Emails are trimmed/lowercased; phones are normalized to digits with an explicit country code (no country is inferred). Identifiers are SHA-256 hashed locally and duplicate rows removed. Missing columns remain empty. With `pre_hashed: true`, supplied values must already be 64-character SHA-256 hex digests; they are not hashed again. All rows are validated before any API call; each call accepts at most 10,000 records. Split larger lists into separate calls. Only hashes are sent to Meta; results contain counts, not identifiers or rejected-row data. Meta's received count is **not** the matched audience size or a delivery guarantee. Use a list you are authorized to upload; uploading is not authorization to collect contacts from unrelated chats.
+
+Before uploading, the tool verifies the audience's `account_id` and `CUSTOM` subtype. A preview does not check ownership or access. Uploading never creates campaigns, activates ads, or changes an ad set. For **only this customer list**, attach the original custom audience, not a lookalike, and verify the ad set's expansion settings. The following lookalike step is optional and deliberately targets similar people instead:
 
 ```json
 { "jsonrpc": "2.0", "id": 2, "method": "tools/call",

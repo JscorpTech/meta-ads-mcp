@@ -5,7 +5,7 @@ import { MINOR_UNIT_NOTE } from "../../src/meta/currency.js";
 import { createMockMcpServer } from "../setup.js";
 
 describe("registerAllTools", () => {
-  it("registers exactly 142 tools total", () => {
+  it("registers exactly 143 tools total", () => {
     // 79 v2 tools renamed (with account_insights removed → 79) + 14 new in v3 +
     //   3 audience-sharing tools (share / unshare / get-shared-accounts) +
     //   1 invoices tool (ads_get_invoices) +
@@ -18,10 +18,11 @@ describe("registerAllTools", () => {
     //   1 Ad Library details tool (ads_library_get_ad_details) +
     //   1 Gemini video analysis tool (ads_analyze_video) +
     //   3 Gemini key management tools (ads_register_gemini_key / status / delete) +
-    //   1 ad dossier tool (ads_get_ad_dossier).
+    //   1 ad dossier tool (ads_get_ad_dossier) +
+    //   1 hashed customer-list upload tool.
     const server = createMockMcpServer();
     registerAllTools(server as never);
-    expect(server.registerTool).toHaveBeenCalledTimes(142);
+    expect(server.registerTool).toHaveBeenCalledTimes(143);
   });
 
   it("registers all tools with unique names", () => {
@@ -29,6 +30,7 @@ describe("registerAllTools", () => {
     registerAllTools(server as never);
 
     const names = server._registeredTools.map((t) => t.name);
+    expect(names).toContain("ads_add_custom_audience_users");
     const uniqueNames = new Set(names);
     expect(uniqueNames.size).toBe(names.length);
   });

@@ -6,6 +6,7 @@ import { buildFieldsParam } from "../utils/validation.js";
 import { AUDIENCE_DEFAULT_FIELDS } from "../meta/types/audience.js";
 import type { CustomAudience, MetaApiResponse } from "../meta/types/index.js";
 import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
+import { audienceUsersInput, prepareAudienceUsers } from "../utils/audience-users.js";
 
 export function registerAudienceTools(server: McpServer): void {
   // ─── Get Custom Audiences ─────────────────────────────────────
@@ -371,6 +372,27 @@ export function registerAudienceTools(server: McpServer): void {
           { type: "text", text: `Audience ${id} deleted successfully.` },
         ],
       };
+    },
+  );
+  server.registerTool(
+    "ads_add_custom_audience_users",
+    {
+      description: `${WRITE_WARNING}Add customer email/phone records to an existing CUSTOM customer-list audience. Normalizes, SHA-256 hashes and deduplicates locally; raw identifiers are never sent to Meta or returned. Phone numbers must include country codes (never inferred). Set pre_hashed=true only for existing 64-character SHA-256 hex digests. Up to 10000 records per call; split larger lists explicitly. dry_run defaults to true: preview counts locally without any API calls. To upload, set dry_run=false; verifies the audience belongs to account_id first. Does not create an audience, activate ads or guarantee matches/delivery. Use only a customer list you are authorized to upload; do not harvest chat contacts.`,
+      inputSchema: audienceUsersInput.shape,
+      annotations: { ...UPDATE },
+    },
+    async (input) => {
+      const prepared = prepareAudienceUsers(input);
+      const account = normalizeAccountId(prepared.account_id);
+      const id = validateMetaId(prepared.audience_id, "audience");
+      const counts = { audience_id: id, account_id: account, input_rows: prepared.users.length, unique_rows: prepared.payload.data.length, duplicate_rows: prepared.duplicates };
+      if (prepared.dry_run) return { content: [{ type: "text", text: JSON.stringify({ ...counts, dry_run: true, uploaded: false, ownership_checked: false }) }] };
+      const audience = await metaApiClient.get<{ account_id?: string; subtype?: string }>(`/${id}`, { fields: "id,account_id,subtype" });
+      if (!audience.account_id || normalizeAccountId(audience.account_id) !== account) throw new Error("Audience does not belong to the selected ad account, or ownership could not be verified.");
+      if (audience.subtype !== "CUSTOM") throw new Error("Only CUSTOM customer-list audiences accept this upload.");
+      const result = await metaApiClient.post<{ audience_id?: string; num_received?: number; num_invalid_entries?: number }>(`/${id}/users`, { payload: prepared.payload });
+      if (!Number.isInteger(result.num_received) || result.num_received! < 0) throw new Error("Meta did not confirm received rows. Check the audience before retrying; the upload outcome is unknown.");
+      return { content: [{ type: "text", text: JSON.stringify({ ...counts, dry_run: false, uploaded: true, num_received: result.num_received, num_invalid_entries: result.num_invalid_entries ?? null, note: "Received rows are not matched users. Matching/availability must be checked separately; no ads were activated." }) }] };
     },
   );
 }
